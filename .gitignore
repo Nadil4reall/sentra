@@ -1,0 +1,10 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+tmp/
+
+# The CIS Benchmark is licensed source material and must never be committed.
+benchmark/*.pdf
+

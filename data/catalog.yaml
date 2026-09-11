@@ -1,0 +1,3129 @@
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  release_date: '2024-08-26'
+  platform: Ubuntu Linux 24.04 LTS
+source_pdf: CIS_Ubuntu_Linux_24.04_LTS_Benchmark_v1.0.0.pdf
+detected_recommendations: 312
+generated_recommendations: 5
+controls:
+- id: 1.1.1.1
+  title: Ensure cramfs kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 24
+    pdf_page_end: 28
+    benchmark_page_start: 23
+    benchmark_page_end: 27
+  generated: true
+  output_file: controls/1_1_1_1.yaml
+- id: 1.1.1.2
+  title: Ensure freevxfs kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 29
+    pdf_page_end: 33
+    benchmark_page_start: 28
+    benchmark_page_end: 32
+  generated: true
+  output_file: controls/1_1_1_2.yaml
+- id: 1.1.1.3
+  title: Ensure hfs kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 34
+    pdf_page_end: 38
+    benchmark_page_start: 33
+    benchmark_page_end: 37
+  generated: true
+  output_file: controls/1_1_1_3.yaml
+- id: 1.1.1.4
+  title: Ensure hfsplus kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 39
+    pdf_page_end: 43
+    benchmark_page_start: 38
+    benchmark_page_end: 42
+  generated: true
+  output_file: controls/1_1_1_4.yaml
+- id: 1.1.1.5
+  title: Ensure jffs2 kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 44
+    pdf_page_end: 48
+    benchmark_page_start: 43
+    benchmark_page_end: 47
+  generated: true
+  output_file: controls/1_1_1_5.yaml
+- id: 1.1.1.6
+  title: Ensure overlayfs kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 49
+    pdf_page_end: 53
+    benchmark_page_start: 48
+    benchmark_page_end: 52
+  generated: false
+  output_file: null
+- id: 1.1.1.7
+  title: Ensure squashfs kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 54
+    pdf_page_end: 58
+    benchmark_page_start: 53
+    benchmark_page_end: 57
+  generated: false
+  output_file: null
+- id: 1.1.1.8
+  title: Ensure udf kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 59
+    pdf_page_end: 63
+    benchmark_page_start: 58
+    benchmark_page_end: 62
+  generated: false
+  output_file: null
+- id: 1.1.1.9
+  title: Ensure usb-storage kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 64
+    pdf_page_end: 68
+    benchmark_page_start: 63
+    benchmark_page_end: 67
+  generated: false
+  output_file: null
+- id: 1.1.1.10
+  title: Ensure unused filesystems kernel modules are not available
+  assessment_status: Manual
+  source:
+    pdf_page_start: 69
+    pdf_page_end: 74
+    benchmark_page_start: 68
+    benchmark_page_end: 73
+  generated: false
+  output_file: null
+- id: 1.1.2.1.1
+  title: Ensure /tmp is a separate partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 77
+    pdf_page_end: 80
+    benchmark_page_start: 76
+    benchmark_page_end: 79
+  generated: false
+  output_file: null
+- id: 1.1.2.1.2
+  title: Ensure nodev option set on /tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 81
+    pdf_page_end: 82
+    benchmark_page_start: 80
+    benchmark_page_end: 81
+  generated: false
+  output_file: null
+- id: 1.1.2.1.3
+  title: Ensure nosuid option set on /tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 83
+    pdf_page_end: 84
+    benchmark_page_start: 82
+    benchmark_page_end: 83
+  generated: false
+  output_file: null
+- id: 1.1.2.1.4
+  title: Ensure noexec option set on /tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 85
+    pdf_page_end: 86
+    benchmark_page_start: 84
+    benchmark_page_end: 85
+  generated: false
+  output_file: null
+- id: 1.1.2.2.1
+  title: Ensure /dev/shm is a separate partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 88
+    pdf_page_end: 89
+    benchmark_page_start: 87
+    benchmark_page_end: 88
+  generated: false
+  output_file: null
+- id: 1.1.2.2.2
+  title: Ensure nodev option set on /dev/shm partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 90
+    pdf_page_end: 91
+    benchmark_page_start: 89
+    benchmark_page_end: 90
+  generated: false
+  output_file: null
+- id: 1.1.2.2.3
+  title: Ensure nosuid option set on /dev/shm partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 92
+    pdf_page_end: 93
+    benchmark_page_start: 91
+    benchmark_page_end: 92
+  generated: false
+  output_file: null
+- id: 1.1.2.2.4
+  title: Ensure noexec option set on /dev/shm partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 94
+    pdf_page_end: 95
+    benchmark_page_start: 93
+    benchmark_page_end: 94
+  generated: false
+  output_file: null
+- id: 1.1.2.3.1
+  title: Ensure separate partition exists for /home
+  assessment_status: Automated
+  source:
+    pdf_page_start: 97
+    pdf_page_end: 99
+    benchmark_page_start: 96
+    benchmark_page_end: 98
+  generated: false
+  output_file: null
+- id: 1.1.2.3.2
+  title: Ensure nodev option set on /home partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 100
+    pdf_page_end: 101
+    benchmark_page_start: 99
+    benchmark_page_end: 100
+  generated: false
+  output_file: null
+- id: 1.1.2.3.3
+  title: Ensure nosuid option set on /home partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 102
+    pdf_page_end: 103
+    benchmark_page_start: 101
+    benchmark_page_end: 102
+  generated: false
+  output_file: null
+- id: 1.1.2.4.1
+  title: Ensure separate partition exists for /var
+  assessment_status: Automated
+  source:
+    pdf_page_start: 105
+    pdf_page_end: 107
+    benchmark_page_start: 104
+    benchmark_page_end: 106
+  generated: false
+  output_file: null
+- id: 1.1.2.4.2
+  title: Ensure nodev option set on /var partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 108
+    pdf_page_end: 109
+    benchmark_page_start: 107
+    benchmark_page_end: 108
+  generated: false
+  output_file: null
+- id: 1.1.2.4.3
+  title: Ensure nosuid option set on /var partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 110
+    pdf_page_end: 111
+    benchmark_page_start: 109
+    benchmark_page_end: 110
+  generated: false
+  output_file: null
+- id: 1.1.2.5.1
+  title: Ensure separate partition exists for /var/tmp
+  assessment_status: Automated
+  source:
+    pdf_page_start: 113
+    pdf_page_end: 114
+    benchmark_page_start: 112
+    benchmark_page_end: 113
+  generated: false
+  output_file: null
+- id: 1.1.2.5.2
+  title: Ensure nodev option set on /var/tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 115
+    pdf_page_end: 116
+    benchmark_page_start: 114
+    benchmark_page_end: 115
+  generated: false
+  output_file: null
+- id: 1.1.2.5.3
+  title: Ensure nosuid option set on /var/tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 117
+    pdf_page_end: 118
+    benchmark_page_start: 116
+    benchmark_page_end: 117
+  generated: false
+  output_file: null
+- id: 1.1.2.5.4
+  title: Ensure noexec option set on /var/tmp partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 119
+    pdf_page_end: 120
+    benchmark_page_start: 118
+    benchmark_page_end: 119
+  generated: false
+  output_file: null
+- id: 1.1.2.6.1
+  title: Ensure separate partition exists for /var/log
+  assessment_status: Automated
+  source:
+    pdf_page_start: 122
+    pdf_page_end: 123
+    benchmark_page_start: 121
+    benchmark_page_end: 122
+  generated: false
+  output_file: null
+- id: 1.1.2.6.2
+  title: Ensure nodev option set on /var/log partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 124
+    pdf_page_end: 125
+    benchmark_page_start: 123
+    benchmark_page_end: 124
+  generated: false
+  output_file: null
+- id: 1.1.2.6.3
+  title: Ensure nosuid option set on /var/log partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 126
+    pdf_page_end: 127
+    benchmark_page_start: 125
+    benchmark_page_end: 126
+  generated: false
+  output_file: null
+- id: 1.1.2.6.4
+  title: Ensure noexec option set on /var/log partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 128
+    pdf_page_end: 129
+    benchmark_page_start: 127
+    benchmark_page_end: 128
+  generated: false
+  output_file: null
+- id: 1.1.2.7.1
+  title: Ensure separate partition exists for /var/log/audit
+  assessment_status: Automated
+  source:
+    pdf_page_start: 131
+    pdf_page_end: 132
+    benchmark_page_start: 130
+    benchmark_page_end: 131
+  generated: false
+  output_file: null
+- id: 1.1.2.7.2
+  title: Ensure nodev option set on /var/log/audit partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 133
+    pdf_page_end: 134
+    benchmark_page_start: 132
+    benchmark_page_end: 133
+  generated: false
+  output_file: null
+- id: 1.1.2.7.3
+  title: Ensure nosuid option set on /var/log/audit partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 135
+    pdf_page_end: 136
+    benchmark_page_start: 134
+    benchmark_page_end: 135
+  generated: false
+  output_file: null
+- id: 1.1.2.7.4
+  title: Ensure noexec option set on /var/log/audit partition
+  assessment_status: Automated
+  source:
+    pdf_page_start: 137
+    pdf_page_end: 138
+    benchmark_page_start: 136
+    benchmark_page_end: 137
+  generated: false
+  output_file: null
+- id: 1.2.1.1
+  title: Ensure GPG keys are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 141
+    pdf_page_end: 143
+    benchmark_page_start: 140
+    benchmark_page_end: 142
+  generated: false
+  output_file: null
+- id: 1.2.1.2
+  title: Ensure package manager repositories are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 144
+    pdf_page_end: 145
+    benchmark_page_start: 143
+    benchmark_page_end: 144
+  generated: false
+  output_file: null
+- id: 1.2.2.1
+  title: Ensure updates, patches, and additional security software are installed
+  assessment_status: Manual
+  source:
+    pdf_page_start: 147
+    pdf_page_end: 149
+    benchmark_page_start: 146
+    benchmark_page_end: 148
+  generated: false
+  output_file: null
+- id: 1.3.1.1
+  title: Ensure AppArmor is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 152
+    pdf_page_end: 153
+    benchmark_page_start: 151
+    benchmark_page_end: 152
+  generated: false
+  output_file: null
+- id: 1.3.1.2
+  title: Ensure AppArmor is enabled in the bootloader configuration
+  assessment_status: Automated
+  source:
+    pdf_page_start: 154
+    pdf_page_end: 155
+    benchmark_page_start: 153
+    benchmark_page_end: 154
+  generated: false
+  output_file: null
+- id: 1.3.1.3
+  title: Ensure all AppArmor Profiles are in enforce or complain mode
+  assessment_status: Automated
+  source:
+    pdf_page_start: 156
+    pdf_page_end: 157
+    benchmark_page_start: 155
+    benchmark_page_end: 156
+  generated: false
+  output_file: null
+- id: 1.3.1.4
+  title: Ensure all AppArmor Profiles are enforcing
+  assessment_status: Automated
+  source:
+    pdf_page_start: 158
+    pdf_page_end: 159
+    benchmark_page_start: 157
+    benchmark_page_end: 158
+  generated: false
+  output_file: null
+- id: 1.4.1
+  title: Ensure bootloader password is set
+  assessment_status: Automated
+  source:
+    pdf_page_start: 161
+    pdf_page_end: 163
+    benchmark_page_start: 160
+    benchmark_page_end: 162
+  generated: false
+  output_file: null
+- id: 1.4.2
+  title: Ensure access to bootloader config is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 164
+    pdf_page_end: 165
+    benchmark_page_start: 163
+    benchmark_page_end: 164
+  generated: false
+  output_file: null
+- id: 1.5.1
+  title: Ensure address space layout randomization is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 167
+    pdf_page_end: 170
+    benchmark_page_start: 166
+    benchmark_page_end: 169
+  generated: false
+  output_file: null
+- id: 1.5.2
+  title: Ensure ptrace_scope is restricted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 171
+    pdf_page_end: 175
+    benchmark_page_start: 170
+    benchmark_page_end: 174
+  generated: false
+  output_file: null
+- id: 1.5.3
+  title: Ensure core dumps are restricted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 176
+    pdf_page_end: 179
+    benchmark_page_start: 175
+    benchmark_page_end: 178
+  generated: false
+  output_file: null
+- id: 1.5.4
+  title: Ensure prelink is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 180
+    pdf_page_end: 181
+    benchmark_page_start: 179
+    benchmark_page_end: 180
+  generated: false
+  output_file: null
+- id: 1.5.5
+  title: Ensure Automatic Error Reporting is not enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 182
+    pdf_page_end: 183
+    benchmark_page_start: 181
+    benchmark_page_end: 182
+  generated: false
+  output_file: null
+- id: 1.6.1
+  title: Ensure message of the day is configured properly
+  assessment_status: Automated
+  source:
+    pdf_page_start: 185
+    pdf_page_end: 186
+    benchmark_page_start: 184
+    benchmark_page_end: 185
+  generated: false
+  output_file: null
+- id: 1.6.2
+  title: Ensure local login warning banner is configured properly
+  assessment_status: Automated
+  source:
+    pdf_page_start: 187
+    pdf_page_end: 188
+    benchmark_page_start: 186
+    benchmark_page_end: 187
+  generated: false
+  output_file: null
+- id: 1.6.3
+  title: Ensure remote login warning banner is configured properly
+  assessment_status: Automated
+  source:
+    pdf_page_start: 189
+    pdf_page_end: 190
+    benchmark_page_start: 188
+    benchmark_page_end: 189
+  generated: false
+  output_file: null
+- id: 1.6.4
+  title: Ensure access to /etc/motd is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 191
+    pdf_page_end: 192
+    benchmark_page_start: 190
+    benchmark_page_end: 191
+  generated: false
+  output_file: null
+- id: 1.6.5
+  title: Ensure access to /etc/issue is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 193
+    pdf_page_end: 194
+    benchmark_page_start: 192
+    benchmark_page_end: 193
+  generated: false
+  output_file: null
+- id: 1.6.6
+  title: Ensure access to /etc/issue.net is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 195
+    pdf_page_end: 196
+    benchmark_page_start: 194
+    benchmark_page_end: 195
+  generated: false
+  output_file: null
+- id: 1.7.1
+  title: Ensure GDM is removed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 198
+    pdf_page_end: 199
+    benchmark_page_start: 197
+    benchmark_page_end: 198
+  generated: false
+  output_file: null
+- id: 1.7.2
+  title: Ensure GDM login banner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 200
+    pdf_page_end: 202
+    benchmark_page_start: 199
+    benchmark_page_end: 201
+  generated: false
+  output_file: null
+- id: 1.7.3
+  title: Ensure GDM disable-user-list option is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 203
+    pdf_page_end: 205
+    benchmark_page_start: 202
+    benchmark_page_end: 204
+  generated: false
+  output_file: null
+- id: 1.7.4
+  title: Ensure GDM screen locks when the user is idle
+  assessment_status: Automated
+  source:
+    pdf_page_start: 206
+    pdf_page_end: 208
+    benchmark_page_start: 205
+    benchmark_page_end: 207
+  generated: false
+  output_file: null
+- id: 1.7.5
+  title: Ensure GDM screen locks cannot be overridden
+  assessment_status: Automated
+  source:
+    pdf_page_start: 209
+    pdf_page_end: 211
+    benchmark_page_start: 208
+    benchmark_page_end: 210
+  generated: false
+  output_file: null
+- id: 1.7.6
+  title: Ensure GDM automatic mounting of removable media is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 212
+    pdf_page_end: 214
+    benchmark_page_start: 211
+    benchmark_page_end: 213
+  generated: false
+  output_file: null
+- id: 1.7.7
+  title: Ensure GDM disabling automatic mounting of removable media is not overridden
+  assessment_status: Automated
+  source:
+    pdf_page_start: 215
+    pdf_page_end: 217
+    benchmark_page_start: 214
+    benchmark_page_end: 216
+  generated: false
+  output_file: null
+- id: 1.7.8
+  title: Ensure GDM autorun-never is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 218
+    pdf_page_end: 220
+    benchmark_page_start: 217
+    benchmark_page_end: 219
+  generated: false
+  output_file: null
+- id: 1.7.9
+  title: Ensure GDM autorun-never is not overridden
+  assessment_status: Automated
+  source:
+    pdf_page_start: 221
+    pdf_page_end: 223
+    benchmark_page_start: 220
+    benchmark_page_end: 222
+  generated: false
+  output_file: null
+- id: 1.7.10
+  title: Ensure XDMCP is not enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 224
+    pdf_page_end: 226
+    benchmark_page_start: 223
+    benchmark_page_end: 225
+  generated: false
+  output_file: null
+- id: 2.1.1
+  title: Ensure autofs services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 229
+    pdf_page_end: 231
+    benchmark_page_start: 228
+    benchmark_page_end: 230
+  generated: false
+  output_file: null
+- id: 2.1.2
+  title: Ensure avahi daemon services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 232
+    pdf_page_end: 234
+    benchmark_page_start: 231
+    benchmark_page_end: 233
+  generated: false
+  output_file: null
+- id: 2.1.3
+  title: Ensure dhcp server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 235
+    pdf_page_end: 237
+    benchmark_page_start: 234
+    benchmark_page_end: 236
+  generated: false
+  output_file: null
+- id: 2.1.4
+  title: Ensure dns server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 238
+    pdf_page_end: 240
+    benchmark_page_start: 237
+    benchmark_page_end: 239
+  generated: false
+  output_file: null
+- id: 2.1.5
+  title: Ensure dnsmasq services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 241
+    pdf_page_end: 242
+    benchmark_page_start: 240
+    benchmark_page_end: 241
+  generated: false
+  output_file: null
+- id: 2.1.6
+  title: Ensure ftp server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 243
+    pdf_page_end: 245
+    benchmark_page_start: 242
+    benchmark_page_end: 244
+  generated: false
+  output_file: null
+- id: 2.1.7
+  title: Ensure ldap server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 246
+    pdf_page_end: 247
+    benchmark_page_start: 245
+    benchmark_page_end: 246
+  generated: false
+  output_file: null
+- id: 2.1.8
+  title: Ensure message access server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 248
+    pdf_page_end: 251
+    benchmark_page_start: 247
+    benchmark_page_end: 250
+  generated: false
+  output_file: null
+- id: 2.1.9
+  title: Ensure network file system services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 252
+    pdf_page_end: 254
+    benchmark_page_start: 251
+    benchmark_page_end: 253
+  generated: false
+  output_file: null
+- id: 2.1.10
+  title: Ensure nis server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 255
+    pdf_page_end: 257
+    benchmark_page_start: 254
+    benchmark_page_end: 256
+  generated: false
+  output_file: null
+- id: 2.1.11
+  title: Ensure print server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 258
+    pdf_page_end: 260
+    benchmark_page_start: 257
+    benchmark_page_end: 259
+  generated: false
+  output_file: null
+- id: 2.1.12
+  title: Ensure rpcbind services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 261
+    pdf_page_end: 263
+    benchmark_page_start: 260
+    benchmark_page_end: 262
+  generated: false
+  output_file: null
+- id: 2.1.13
+  title: Ensure rsync services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 264
+    pdf_page_end: 265
+    benchmark_page_start: 263
+    benchmark_page_end: 264
+  generated: false
+  output_file: null
+- id: 2.1.14
+  title: Ensure samba file server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 266
+    pdf_page_end: 267
+    benchmark_page_start: 265
+    benchmark_page_end: 266
+  generated: false
+  output_file: null
+- id: 2.1.15
+  title: Ensure snmp services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 268
+    pdf_page_end: 270
+    benchmark_page_start: 267
+    benchmark_page_end: 269
+  generated: false
+  output_file: null
+- id: 2.1.16
+  title: Ensure tftp server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 271
+    pdf_page_end: 273
+    benchmark_page_start: 270
+    benchmark_page_end: 272
+  generated: false
+  output_file: null
+- id: 2.1.17
+  title: Ensure web proxy server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 274
+    pdf_page_end: 276
+    benchmark_page_start: 273
+    benchmark_page_end: 275
+  generated: false
+  output_file: null
+- id: 2.1.18
+  title: Ensure web server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 277
+    pdf_page_end: 280
+    benchmark_page_start: 276
+    benchmark_page_end: 279
+  generated: false
+  output_file: null
+- id: 2.1.19
+  title: Ensure xinetd services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 281
+    pdf_page_end: 283
+    benchmark_page_start: 280
+    benchmark_page_end: 282
+  generated: false
+  output_file: null
+- id: 2.1.20
+  title: Ensure X window server services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 284
+    pdf_page_end: 285
+    benchmark_page_start: 283
+    benchmark_page_end: 284
+  generated: false
+  output_file: null
+- id: 2.1.21
+  title: Ensure mail transfer agent is configured for local-only mode
+  assessment_status: Automated
+  source:
+    pdf_page_start: 286
+    pdf_page_end: 288
+    benchmark_page_start: 285
+    benchmark_page_end: 287
+  generated: false
+  output_file: null
+- id: 2.1.22
+  title: Ensure only approved services are listening on a network interface
+  assessment_status: Manual
+  source:
+    pdf_page_start: 289
+    pdf_page_end: 291
+    benchmark_page_start: 288
+    benchmark_page_end: 290
+  generated: false
+  output_file: null
+- id: 2.2.1
+  title: Ensure NIS Client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 293
+    pdf_page_end: 294
+    benchmark_page_start: 292
+    benchmark_page_end: 293
+  generated: false
+  output_file: null
+- id: 2.2.2
+  title: Ensure rsh client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 295
+    pdf_page_end: 296
+    benchmark_page_start: 294
+    benchmark_page_end: 295
+  generated: false
+  output_file: null
+- id: 2.2.3
+  title: Ensure talk client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 297
+    pdf_page_end: 298
+    benchmark_page_start: 296
+    benchmark_page_end: 297
+  generated: false
+  output_file: null
+- id: 2.2.4
+  title: Ensure telnet client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 299
+    pdf_page_end: 300
+    benchmark_page_start: 298
+    benchmark_page_end: 299
+  generated: false
+  output_file: null
+- id: 2.2.5
+  title: Ensure ldap client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 301
+    pdf_page_end: 302
+    benchmark_page_start: 300
+    benchmark_page_end: 301
+  generated: false
+  output_file: null
+- id: 2.2.6
+  title: Ensure ftp client is not installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 303
+    pdf_page_end: 304
+    benchmark_page_start: 302
+    benchmark_page_end: 303
+  generated: false
+  output_file: null
+- id: 2.3.1.1
+  title: Ensure a single time synchronization daemon is in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 307
+    pdf_page_end: 310
+    benchmark_page_start: 306
+    benchmark_page_end: 309
+  generated: false
+  output_file: null
+- id: 2.3.2.1
+  title: Ensure systemd-timesyncd configured with authorized timeserver
+  assessment_status: Automated
+  source:
+    pdf_page_start: 313
+    pdf_page_end: 316
+    benchmark_page_start: 312
+    benchmark_page_end: 315
+  generated: false
+  output_file: null
+- id: 2.3.2.2
+  title: Ensure systemd-timesyncd is enabled and running
+  assessment_status: Automated
+  source:
+    pdf_page_start: 317
+    pdf_page_end: 318
+    benchmark_page_start: 316
+    benchmark_page_end: 317
+  generated: false
+  output_file: null
+- id: 2.3.3.1
+  title: Ensure chrony is configured with authorized timeserver
+  assessment_status: Automated
+  source:
+    pdf_page_start: 320
+    pdf_page_end: 323
+    benchmark_page_start: 319
+    benchmark_page_end: 322
+  generated: false
+  output_file: null
+- id: 2.3.3.2
+  title: Ensure chrony is running as user _chrony
+  assessment_status: Automated
+  source:
+    pdf_page_start: 324
+    pdf_page_end: 325
+    benchmark_page_start: 323
+    benchmark_page_end: 324
+  generated: false
+  output_file: null
+- id: 2.3.3.3
+  title: Ensure chrony is enabled and running
+  assessment_status: Automated
+  source:
+    pdf_page_start: 326
+    pdf_page_end: 327
+    benchmark_page_start: 325
+    benchmark_page_end: 326
+  generated: false
+  output_file: null
+- id: 2.4.1.1
+  title: Ensure cron daemon is enabled and active
+  assessment_status: Automated
+  source:
+    pdf_page_start: 330
+    pdf_page_end: 331
+    benchmark_page_start: 329
+    benchmark_page_end: 330
+  generated: false
+  output_file: null
+- id: 2.4.1.2
+  title: Ensure permissions on /etc/crontab are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 332
+    pdf_page_end: 333
+    benchmark_page_start: 331
+    benchmark_page_end: 332
+  generated: false
+  output_file: null
+- id: 2.4.1.3
+  title: Ensure permissions on /etc/cron.hourly are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 334
+    pdf_page_end: 335
+    benchmark_page_start: 333
+    benchmark_page_end: 334
+  generated: false
+  output_file: null
+- id: 2.4.1.4
+  title: Ensure permissions on /etc/cron.daily are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 336
+    pdf_page_end: 337
+    benchmark_page_start: 335
+    benchmark_page_end: 336
+  generated: false
+  output_file: null
+- id: 2.4.1.5
+  title: Ensure permissions on /etc/cron.weekly are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 338
+    pdf_page_end: 339
+    benchmark_page_start: 337
+    benchmark_page_end: 338
+  generated: false
+  output_file: null
+- id: 2.4.1.6
+  title: Ensure permissions on /etc/cron.monthly are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 340
+    pdf_page_end: 341
+    benchmark_page_start: 339
+    benchmark_page_end: 340
+  generated: false
+  output_file: null
+- id: 2.4.1.7
+  title: Ensure permissions on /etc/cron.d are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 342
+    pdf_page_end: 343
+    benchmark_page_start: 341
+    benchmark_page_end: 342
+  generated: false
+  output_file: null
+- id: 2.4.1.8
+  title: Ensure crontab is restricted to authorized users
+  assessment_status: Automated
+  source:
+    pdf_page_start: 344
+    pdf_page_end: 347
+    benchmark_page_start: 343
+    benchmark_page_end: 346
+  generated: false
+  output_file: null
+- id: 2.4.2.1
+  title: Ensure at is restricted to authorized users
+  assessment_status: Automated
+  source:
+    pdf_page_start: 349
+    pdf_page_end: 352
+    benchmark_page_start: 348
+    benchmark_page_end: 351
+  generated: false
+  output_file: null
+- id: 3.1.1
+  title: Ensure IPv6 status is identified
+  assessment_status: Manual
+  source:
+    pdf_page_start: 355
+    pdf_page_end: 357
+    benchmark_page_start: 354
+    benchmark_page_end: 356
+  generated: false
+  output_file: null
+- id: 3.1.2
+  title: Ensure wireless interfaces are disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 358
+    pdf_page_end: 361
+    benchmark_page_start: 357
+    benchmark_page_end: 360
+  generated: false
+  output_file: null
+- id: 3.1.3
+  title: Ensure bluetooth services are not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 362
+    pdf_page_end: 364
+    benchmark_page_start: 361
+    benchmark_page_end: 363
+  generated: false
+  output_file: null
+- id: 3.2.1
+  title: Ensure dccp kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 366
+    pdf_page_end: 370
+    benchmark_page_start: 365
+    benchmark_page_end: 369
+  generated: false
+  output_file: null
+- id: 3.2.2
+  title: Ensure tipc kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 371
+    pdf_page_end: 375
+    benchmark_page_start: 370
+    benchmark_page_end: 374
+  generated: false
+  output_file: null
+- id: 3.2.3
+  title: Ensure rds kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 376
+    pdf_page_end: 380
+    benchmark_page_start: 375
+    benchmark_page_end: 379
+  generated: false
+  output_file: null
+- id: 3.2.4
+  title: Ensure sctp kernel module is not available
+  assessment_status: Automated
+  source:
+    pdf_page_start: 381
+    pdf_page_end: 385
+    benchmark_page_start: 380
+    benchmark_page_end: 384
+  generated: false
+  output_file: null
+- id: 3.3.1
+  title: Ensure ip forwarding is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 387
+    pdf_page_end: 391
+    benchmark_page_start: 386
+    benchmark_page_end: 390
+  generated: false
+  output_file: null
+- id: 3.3.2
+  title: Ensure packet redirect sending is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 392
+    pdf_page_end: 396
+    benchmark_page_start: 391
+    benchmark_page_end: 395
+  generated: false
+  output_file: null
+- id: 3.3.3
+  title: Ensure bogus icmp responses are ignored
+  assessment_status: Automated
+  source:
+    pdf_page_start: 397
+    pdf_page_end: 401
+    benchmark_page_start: 396
+    benchmark_page_end: 400
+  generated: false
+  output_file: null
+- id: 3.3.4
+  title: Ensure broadcast icmp requests are ignored
+  assessment_status: Automated
+  source:
+    pdf_page_start: 402
+    pdf_page_end: 406
+    benchmark_page_start: 401
+    benchmark_page_end: 405
+  generated: false
+  output_file: null
+- id: 3.3.5
+  title: Ensure icmp redirects are not accepted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 407
+    pdf_page_end: 411
+    benchmark_page_start: 406
+    benchmark_page_end: 410
+  generated: false
+  output_file: null
+- id: 3.3.6
+  title: Ensure secure icmp redirects are not accepted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 412
+    pdf_page_end: 416
+    benchmark_page_start: 411
+    benchmark_page_end: 415
+  generated: false
+  output_file: null
+- id: 3.3.7
+  title: Ensure reverse path filtering is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 417
+    pdf_page_end: 421
+    benchmark_page_start: 416
+    benchmark_page_end: 420
+  generated: false
+  output_file: null
+- id: 3.3.8
+  title: Ensure source routed packets are not accepted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 422
+    pdf_page_end: 426
+    benchmark_page_start: 421
+    benchmark_page_end: 425
+  generated: false
+  output_file: null
+- id: 3.3.9
+  title: Ensure suspicious packets are logged
+  assessment_status: Automated
+  source:
+    pdf_page_start: 427
+    pdf_page_end: 431
+    benchmark_page_start: 426
+    benchmark_page_end: 430
+  generated: false
+  output_file: null
+- id: 3.3.10
+  title: Ensure tcp syn cookies is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 432
+    pdf_page_end: 436
+    benchmark_page_start: 431
+    benchmark_page_end: 435
+  generated: false
+  output_file: null
+- id: 3.3.11
+  title: Ensure ipv6 router advertisements are not accepted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 437
+    pdf_page_end: 441
+    benchmark_page_start: 436
+    benchmark_page_end: 440
+  generated: false
+  output_file: null
+- id: 4.1.1
+  title: Ensure a single firewall configuration utility is in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 444
+    pdf_page_end: 446
+    benchmark_page_start: 443
+    benchmark_page_end: 445
+  generated: false
+  output_file: null
+- id: 4.2.1
+  title: Ensure ufw is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 448
+    pdf_page_end: 449
+    benchmark_page_start: 447
+    benchmark_page_end: 448
+  generated: false
+  output_file: null
+- id: 4.2.2
+  title: Ensure iptables-persistent is not installed with ufw
+  assessment_status: Automated
+  source:
+    pdf_page_start: 450
+    pdf_page_end: 451
+    benchmark_page_start: 449
+    benchmark_page_end: 450
+  generated: false
+  output_file: null
+- id: 4.2.3
+  title: Ensure ufw service is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 452
+    pdf_page_end: 454
+    benchmark_page_start: 451
+    benchmark_page_end: 453
+  generated: false
+  output_file: null
+- id: 4.2.4
+  title: Ensure ufw loopback traffic is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 455
+    pdf_page_end: 457
+    benchmark_page_start: 454
+    benchmark_page_end: 456
+  generated: false
+  output_file: null
+- id: 4.2.5
+  title: Ensure ufw outbound connections are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 458
+    pdf_page_end: 459
+    benchmark_page_start: 457
+    benchmark_page_end: 458
+  generated: false
+  output_file: null
+- id: 4.2.6
+  title: Ensure ufw firewall rules exist for all open ports
+  assessment_status: Automated
+  source:
+    pdf_page_start: 460
+    pdf_page_end: 462
+    benchmark_page_start: 459
+    benchmark_page_end: 461
+  generated: false
+  output_file: null
+- id: 4.2.7
+  title: Ensure ufw default deny firewall policy
+  assessment_status: Automated
+  source:
+    pdf_page_start: 463
+    pdf_page_end: 464
+    benchmark_page_start: 462
+    benchmark_page_end: 463
+  generated: false
+  output_file: null
+- id: 4.3.1
+  title: Ensure nftables is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 467
+    pdf_page_end: 468
+    benchmark_page_start: 466
+    benchmark_page_end: 467
+  generated: false
+  output_file: null
+- id: 4.3.2
+  title: Ensure ufw is uninstalled or disabled with nftables
+  assessment_status: Automated
+  source:
+    pdf_page_start: 469
+    pdf_page_end: 470
+    benchmark_page_start: 468
+    benchmark_page_end: 469
+  generated: false
+  output_file: null
+- id: 4.3.3
+  title: Ensure iptables are flushed with nftables
+  assessment_status: Manual
+  source:
+    pdf_page_start: 471
+    pdf_page_end: 472
+    benchmark_page_start: 470
+    benchmark_page_end: 471
+  generated: false
+  output_file: null
+- id: 4.3.4
+  title: Ensure a nftables table exists
+  assessment_status: Automated
+  source:
+    pdf_page_start: 473
+    pdf_page_end: 474
+    benchmark_page_start: 472
+    benchmark_page_end: 473
+  generated: false
+  output_file: null
+- id: 4.3.5
+  title: Ensure nftables base chains exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 475
+    pdf_page_end: 476
+    benchmark_page_start: 474
+    benchmark_page_end: 475
+  generated: false
+  output_file: null
+- id: 4.3.6
+  title: Ensure nftables loopback traffic is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 477
+    pdf_page_end: 478
+    benchmark_page_start: 476
+    benchmark_page_end: 477
+  generated: false
+  output_file: null
+- id: 4.3.7
+  title: Ensure nftables outbound and established connections are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 479
+    pdf_page_end: 480
+    benchmark_page_start: 478
+    benchmark_page_end: 479
+  generated: false
+  output_file: null
+- id: 4.3.8
+  title: Ensure nftables default deny firewall policy
+  assessment_status: Automated
+  source:
+    pdf_page_start: 481
+    pdf_page_end: 483
+    benchmark_page_start: 480
+    benchmark_page_end: 482
+  generated: false
+  output_file: null
+- id: 4.3.9
+  title: Ensure nftables service is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 484
+    pdf_page_end: 485
+    benchmark_page_start: 483
+    benchmark_page_end: 484
+  generated: false
+  output_file: null
+- id: 4.3.10
+  title: Ensure nftables rules are permanent
+  assessment_status: Automated
+  source:
+    pdf_page_start: 486
+    pdf_page_end: 489
+    benchmark_page_start: 485
+    benchmark_page_end: 488
+  generated: false
+  output_file: null
+- id: 4.4.1.1
+  title: Ensure iptables packages are installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 492
+    pdf_page_end: 493
+    benchmark_page_start: 491
+    benchmark_page_end: 492
+  generated: false
+  output_file: null
+- id: 4.4.1.2
+  title: Ensure nftables is not in use with iptables
+  assessment_status: Automated
+  source:
+    pdf_page_start: 494
+    pdf_page_end: 495
+    benchmark_page_start: 493
+    benchmark_page_end: 494
+  generated: false
+  output_file: null
+- id: 4.4.1.3
+  title: Ensure ufw is not in use with iptables
+  assessment_status: Automated
+  source:
+    pdf_page_start: 496
+    pdf_page_end: 497
+    benchmark_page_start: 495
+    benchmark_page_end: 496
+  generated: false
+  output_file: null
+- id: 4.4.2.1
+  title: Ensure iptables default deny firewall policy
+  assessment_status: Automated
+  source:
+    pdf_page_start: 499
+    pdf_page_end: 500
+    benchmark_page_start: 498
+    benchmark_page_end: 499
+  generated: false
+  output_file: null
+- id: 4.4.2.2
+  title: Ensure iptables loopback traffic is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 501
+    pdf_page_end: 502
+    benchmark_page_start: 500
+    benchmark_page_end: 501
+  generated: false
+  output_file: null
+- id: 4.4.2.3
+  title: Ensure iptables outbound and established connections are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 503
+    pdf_page_end: 504
+    benchmark_page_start: 502
+    benchmark_page_end: 503
+  generated: false
+  output_file: null
+- id: 4.4.2.4
+  title: Ensure iptables firewall rules exist for all open ports
+  assessment_status: Automated
+  source:
+    pdf_page_start: 505
+    pdf_page_end: 507
+    benchmark_page_start: 504
+    benchmark_page_end: 506
+  generated: false
+  output_file: null
+- id: 4.4.3.1
+  title: Ensure ip6tables default deny firewall policy
+  assessment_status: Automated
+  source:
+    pdf_page_start: 509
+    pdf_page_end: 511
+    benchmark_page_start: 508
+    benchmark_page_end: 510
+  generated: false
+  output_file: null
+- id: 4.4.3.2
+  title: Ensure ip6tables loopback traffic is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 512
+    pdf_page_end: 514
+    benchmark_page_start: 511
+    benchmark_page_end: 513
+  generated: false
+  output_file: null
+- id: 4.4.3.3
+  title: Ensure ip6tables outbound and established connections are configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 515
+    pdf_page_end: 517
+    benchmark_page_start: 514
+    benchmark_page_end: 516
+  generated: false
+  output_file: null
+- id: 4.4.3.4
+  title: Ensure ip6tables firewall rules exist for all open ports
+  assessment_status: Automated
+  source:
+    pdf_page_start: 518
+    pdf_page_end: 520
+    benchmark_page_start: 517
+    benchmark_page_end: 519
+  generated: false
+  output_file: null
+- id: 5.1.1
+  title: Ensure permissions on /etc/ssh/sshd_config are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 524
+    pdf_page_end: 526
+    benchmark_page_start: 523
+    benchmark_page_end: 525
+  generated: false
+  output_file: null
+- id: 5.1.2
+  title: Ensure permissions on SSH private host key files are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 527
+    pdf_page_end: 530
+    benchmark_page_start: 526
+    benchmark_page_end: 529
+  generated: false
+  output_file: null
+- id: 5.1.3
+  title: Ensure permissions on SSH public host key files are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 531
+    pdf_page_end: 534
+    benchmark_page_start: 530
+    benchmark_page_end: 533
+  generated: false
+  output_file: null
+- id: 5.1.4
+  title: Ensure sshd access is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 535
+    pdf_page_end: 537
+    benchmark_page_start: 534
+    benchmark_page_end: 536
+  generated: false
+  output_file: null
+- id: 5.1.5
+  title: Ensure sshd Banner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 538
+    pdf_page_end: 540
+    benchmark_page_start: 537
+    benchmark_page_end: 539
+  generated: false
+  output_file: null
+- id: 5.1.6
+  title: Ensure sshd Ciphers are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 541
+    pdf_page_end: 543
+    benchmark_page_start: 540
+    benchmark_page_end: 542
+  generated: false
+  output_file: null
+- id: 5.1.7
+  title: Ensure sshd ClientAliveInterval and ClientAliveCountMax are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 544
+    pdf_page_end: 546
+    benchmark_page_start: 543
+    benchmark_page_end: 545
+  generated: false
+  output_file: null
+- id: 5.1.8
+  title: Ensure sshd DisableForwarding is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 547
+    pdf_page_end: 549
+    benchmark_page_start: 546
+    benchmark_page_end: 548
+  generated: false
+  output_file: null
+- id: 5.1.9
+  title: Ensure sshd GSSAPIAuthentication is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 550
+    pdf_page_end: 551
+    benchmark_page_start: 549
+    benchmark_page_end: 550
+  generated: false
+  output_file: null
+- id: 5.1.10
+  title: Ensure sshd HostbasedAuthentication is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 552
+    pdf_page_end: 553
+    benchmark_page_start: 551
+    benchmark_page_end: 552
+  generated: false
+  output_file: null
+- id: 5.1.11
+  title: Ensure sshd IgnoreRhosts is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 554
+    pdf_page_end: 555
+    benchmark_page_start: 553
+    benchmark_page_end: 554
+  generated: false
+  output_file: null
+- id: 5.1.12
+  title: Ensure sshd KexAlgorithms is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 556
+    pdf_page_end: 558
+    benchmark_page_start: 555
+    benchmark_page_end: 557
+  generated: false
+  output_file: null
+- id: 5.1.13
+  title: Ensure sshd LoginGraceTime is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 559
+    pdf_page_end: 560
+    benchmark_page_start: 558
+    benchmark_page_end: 559
+  generated: false
+  output_file: null
+- id: 5.1.14
+  title: Ensure sshd LogLevel is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 561
+    pdf_page_end: 562
+    benchmark_page_start: 560
+    benchmark_page_end: 561
+  generated: false
+  output_file: null
+- id: 5.1.15
+  title: Ensure sshd MACs are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 563
+    pdf_page_end: 565
+    benchmark_page_start: 562
+    benchmark_page_end: 564
+  generated: false
+  output_file: null
+- id: 5.1.16
+  title: Ensure sshd MaxAuthTries is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 566
+    pdf_page_end: 567
+    benchmark_page_start: 565
+    benchmark_page_end: 566
+  generated: false
+  output_file: null
+- id: 5.1.17
+  title: Ensure sshd MaxSessions is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 568
+    pdf_page_end: 569
+    benchmark_page_start: 567
+    benchmark_page_end: 568
+  generated: false
+  output_file: null
+- id: 5.1.18
+  title: Ensure sshd MaxStartups is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 570
+    pdf_page_end: 571
+    benchmark_page_start: 569
+    benchmark_page_end: 570
+  generated: false
+  output_file: null
+- id: 5.1.19
+  title: Ensure sshd PermitEmptyPasswords is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 572
+    pdf_page_end: 573
+    benchmark_page_start: 571
+    benchmark_page_end: 572
+  generated: false
+  output_file: null
+- id: 5.1.20
+  title: Ensure sshd PermitRootLogin is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 574
+    pdf_page_end: 575
+    benchmark_page_start: 573
+    benchmark_page_end: 574
+  generated: false
+  output_file: null
+- id: 5.1.21
+  title: Ensure sshd PermitUserEnvironment is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 576
+    pdf_page_end: 577
+    benchmark_page_start: 575
+    benchmark_page_end: 576
+  generated: false
+  output_file: null
+- id: 5.1.22
+  title: Ensure sshd UsePAM is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 578
+    pdf_page_end: 579
+    benchmark_page_start: 577
+    benchmark_page_end: 578
+  generated: false
+  output_file: null
+- id: 5.2.1
+  title: Ensure sudo is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 581
+    pdf_page_end: 582
+    benchmark_page_start: 580
+    benchmark_page_end: 581
+  generated: false
+  output_file: null
+- id: 5.2.2
+  title: Ensure sudo commands use pty
+  assessment_status: Automated
+  source:
+    pdf_page_start: 583
+    pdf_page_end: 585
+    benchmark_page_start: 582
+    benchmark_page_end: 584
+  generated: false
+  output_file: null
+- id: 5.2.3
+  title: Ensure sudo log file exists
+  assessment_status: Automated
+  source:
+    pdf_page_start: 586
+    pdf_page_end: 588
+    benchmark_page_start: 585
+    benchmark_page_end: 587
+  generated: false
+  output_file: null
+- id: 5.2.4
+  title: Ensure users must provide password for privilege escalation
+  assessment_status: Automated
+  source:
+    pdf_page_start: 589
+    pdf_page_end: 590
+    benchmark_page_start: 588
+    benchmark_page_end: 589
+  generated: false
+  output_file: null
+- id: 5.2.5
+  title: Ensure re-authentication for privilege escalation is not disabled globally
+  assessment_status: Automated
+  source:
+    pdf_page_start: 591
+    pdf_page_end: 592
+    benchmark_page_start: 590
+    benchmark_page_end: 591
+  generated: false
+  output_file: null
+- id: 5.2.6
+  title: Ensure sudo authentication timeout is configured correctly
+  assessment_status: Automated
+  source:
+    pdf_page_start: 593
+    pdf_page_end: 594
+    benchmark_page_start: 592
+    benchmark_page_end: 593
+  generated: false
+  output_file: null
+- id: 5.2.7
+  title: Ensure access to the su command is restricted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 595
+    pdf_page_end: 596
+    benchmark_page_start: 594
+    benchmark_page_end: 595
+  generated: false
+  output_file: null
+- id: 5.3.1.1
+  title: Ensure latest version of pam is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 599
+    pdf_page_end: 599
+    benchmark_page_start: 598
+    benchmark_page_end: 598
+  generated: false
+  output_file: null
+- id: 5.3.1.2
+  title: Ensure libpam-modules is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 600
+    pdf_page_end: 600
+    benchmark_page_start: 599
+    benchmark_page_end: 599
+  generated: false
+  output_file: null
+- id: 5.3.1.3
+  title: Ensure libpam-pwquality is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 601
+    pdf_page_end: 601
+    benchmark_page_start: 600
+    benchmark_page_end: 600
+  generated: false
+  output_file: null
+- id: 5.3.2.1
+  title: Ensure pam_unix module is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 603
+    pdf_page_end: 604
+    benchmark_page_start: 602
+    benchmark_page_end: 603
+  generated: false
+  output_file: null
+- id: 5.3.2.2
+  title: Ensure pam_faillock module is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 605
+    pdf_page_end: 607
+    benchmark_page_start: 604
+    benchmark_page_end: 606
+  generated: false
+  output_file: null
+- id: 5.3.2.3
+  title: Ensure pam_pwquality module is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 608
+    pdf_page_end: 610
+    benchmark_page_start: 607
+    benchmark_page_end: 609
+  generated: false
+  output_file: null
+- id: 5.3.2.4
+  title: Ensure pam_pwhistory module is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 611
+    pdf_page_end: 613
+    benchmark_page_start: 610
+    benchmark_page_end: 612
+  generated: false
+  output_file: null
+- id: 5.3.3.1.1
+  title: Ensure password failed attempts lockout is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 616
+    pdf_page_end: 617
+    benchmark_page_start: 615
+    benchmark_page_end: 616
+  generated: false
+  output_file: null
+- id: 5.3.3.1.2
+  title: Ensure password unlock time is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 618
+    pdf_page_end: 620
+    benchmark_page_start: 617
+    benchmark_page_end: 619
+  generated: false
+  output_file: null
+- id: 5.3.3.1.3
+  title: Ensure password failed attempts lockout includes root account
+  assessment_status: Automated
+  source:
+    pdf_page_start: 621
+    pdf_page_end: 623
+    benchmark_page_start: 620
+    benchmark_page_end: 622
+  generated: false
+  output_file: null
+- id: 5.3.3.2.1
+  title: Ensure password number of changed characters is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 626
+    pdf_page_end: 629
+    benchmark_page_start: 625
+    benchmark_page_end: 628
+  generated: false
+  output_file: null
+- id: 5.3.3.2.2
+  title: Ensure minimum password length is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 630
+    pdf_page_end: 633
+    benchmark_page_start: 629
+    benchmark_page_end: 632
+  generated: false
+  output_file: null
+- id: 5.3.3.2.3
+  title: Ensure password complexity is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 634
+    pdf_page_end: 637
+    benchmark_page_start: 633
+    benchmark_page_end: 636
+  generated: false
+  output_file: null
+- id: 5.3.3.2.4
+  title: Ensure password same consecutive characters is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 638
+    pdf_page_end: 641
+    benchmark_page_start: 637
+    benchmark_page_end: 640
+  generated: false
+  output_file: null
+- id: 5.3.3.2.5
+  title: Ensure password maximum sequential characters is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 642
+    pdf_page_end: 645
+    benchmark_page_start: 641
+    benchmark_page_end: 644
+  generated: false
+  output_file: null
+- id: 5.3.3.2.6
+  title: Ensure password dictionary check is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 646
+    pdf_page_end: 648
+    benchmark_page_start: 645
+    benchmark_page_end: 647
+  generated: false
+  output_file: null
+- id: 5.3.3.2.7
+  title: Ensure password quality checking is enforced
+  assessment_status: Automated
+  source:
+    pdf_page_start: 649
+    pdf_page_end: 650
+    benchmark_page_start: 648
+    benchmark_page_end: 649
+  generated: false
+  output_file: null
+- id: 5.3.3.2.8
+  title: Ensure password quality is enforced for the root user
+  assessment_status: Automated
+  source:
+    pdf_page_start: 651
+    pdf_page_end: 653
+    benchmark_page_start: 650
+    benchmark_page_end: 652
+  generated: false
+  output_file: null
+- id: 5.3.3.3.1
+  title: Ensure password history remember is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 655
+    pdf_page_end: 657
+    benchmark_page_start: 654
+    benchmark_page_end: 656
+  generated: false
+  output_file: null
+- id: 5.3.3.3.2
+  title: Ensure password history is enforced for the root user
+  assessment_status: Automated
+  source:
+    pdf_page_start: 658
+    pdf_page_end: 660
+    benchmark_page_start: 657
+    benchmark_page_end: 659
+  generated: false
+  output_file: null
+- id: 5.3.3.3.3
+  title: Ensure pam_pwhistory includes use_authtok
+  assessment_status: Automated
+  source:
+    pdf_page_start: 661
+    pdf_page_end: 663
+    benchmark_page_start: 660
+    benchmark_page_end: 662
+  generated: false
+  output_file: null
+- id: 5.3.3.4.1
+  title: Ensure pam_unix does not include nullok
+  assessment_status: Automated
+  source:
+    pdf_page_start: 665
+    pdf_page_end: 667
+    benchmark_page_start: 664
+    benchmark_page_end: 666
+  generated: false
+  output_file: null
+- id: 5.3.3.4.2
+  title: Ensure pam_unix does not include remember
+  assessment_status: Automated
+  source:
+    pdf_page_start: 668
+    pdf_page_end: 669
+    benchmark_page_start: 667
+    benchmark_page_end: 668
+  generated: false
+  output_file: null
+- id: 5.3.3.4.3
+  title: Ensure pam_unix includes a strong password hashing algorithm
+  assessment_status: Automated
+  source:
+    pdf_page_start: 670
+    pdf_page_end: 672
+    benchmark_page_start: 669
+    benchmark_page_end: 671
+  generated: false
+  output_file: null
+- id: 5.3.3.4.4
+  title: Ensure pam_unix includes use_authtok
+  assessment_status: Automated
+  source:
+    pdf_page_start: 673
+    pdf_page_end: 675
+    benchmark_page_start: 672
+    benchmark_page_end: 674
+  generated: false
+  output_file: null
+- id: 5.4.1.1
+  title: Ensure password expiration is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 678
+    pdf_page_end: 681
+    benchmark_page_start: 677
+    benchmark_page_end: 680
+  generated: false
+  output_file: null
+- id: 5.4.1.2
+  title: Ensure minimum password days is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 682
+    pdf_page_end: 684
+    benchmark_page_start: 681
+    benchmark_page_end: 683
+  generated: false
+  output_file: null
+- id: 5.4.1.3
+  title: Ensure password expiration warning days is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 685
+    pdf_page_end: 686
+    benchmark_page_start: 684
+    benchmark_page_end: 685
+  generated: false
+  output_file: null
+- id: 5.4.1.4
+  title: Ensure strong password hashing algorithm is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 687
+    pdf_page_end: 689
+    benchmark_page_start: 686
+    benchmark_page_end: 688
+  generated: false
+  output_file: null
+- id: 5.4.1.5
+  title: Ensure inactive password lock is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 690
+    pdf_page_end: 692
+    benchmark_page_start: 689
+    benchmark_page_end: 691
+  generated: false
+  output_file: null
+- id: 5.4.1.6
+  title: Ensure all users last password change date is in the past
+  assessment_status: Automated
+  source:
+    pdf_page_start: 693
+    pdf_page_end: 694
+    benchmark_page_start: 692
+    benchmark_page_end: 693
+  generated: false
+  output_file: null
+- id: 5.4.2.1
+  title: Ensure root is the only UID 0 account
+  assessment_status: Automated
+  source:
+    pdf_page_start: 696
+    pdf_page_end: 696
+    benchmark_page_start: 695
+    benchmark_page_end: 695
+  generated: false
+  output_file: null
+- id: 5.4.2.2
+  title: Ensure root is the only GID 0 account
+  assessment_status: Automated
+  source:
+    pdf_page_start: 697
+    pdf_page_end: 698
+    benchmark_page_start: 696
+    benchmark_page_end: 697
+  generated: false
+  output_file: null
+- id: 5.4.2.3
+  title: Ensure group root is the only GID 0 group
+  assessment_status: Automated
+  source:
+    pdf_page_start: 699
+    pdf_page_end: 700
+    benchmark_page_start: 698
+    benchmark_page_end: 699
+  generated: false
+  output_file: null
+- id: 5.4.2.4
+  title: Ensure root account access is controlled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 701
+    pdf_page_end: 702
+    benchmark_page_start: 700
+    benchmark_page_end: 701
+  generated: false
+  output_file: null
+- id: 5.4.2.5
+  title: Ensure root path integrity
+  assessment_status: Automated
+  source:
+    pdf_page_start: 703
+    pdf_page_end: 705
+    benchmark_page_start: 702
+    benchmark_page_end: 704
+  generated: false
+  output_file: null
+- id: 5.4.2.6
+  title: Ensure root user umask is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 706
+    pdf_page_end: 708
+    benchmark_page_start: 705
+    benchmark_page_end: 707
+  generated: false
+  output_file: null
+- id: 5.4.2.7
+  title: Ensure system accounts do not have a valid login shell
+  assessment_status: Automated
+  source:
+    pdf_page_start: 709
+    pdf_page_end: 711
+    benchmark_page_start: 708
+    benchmark_page_end: 710
+  generated: false
+  output_file: null
+- id: 5.4.2.8
+  title: Ensure accounts without a valid login shell are locked
+  assessment_status: Automated
+  source:
+    pdf_page_start: 712
+    pdf_page_end: 713
+    benchmark_page_start: 711
+    benchmark_page_end: 712
+  generated: false
+  output_file: null
+- id: 5.4.3.1
+  title: Ensure nologin is not listed in /etc/shells
+  assessment_status: Automated
+  source:
+    pdf_page_start: 715
+    pdf_page_end: 715
+    benchmark_page_start: 714
+    benchmark_page_end: 714
+  generated: false
+  output_file: null
+- id: 5.4.3.2
+  title: Ensure default user shell timeout is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 716
+    pdf_page_end: 719
+    benchmark_page_start: 715
+    benchmark_page_end: 718
+  generated: false
+  output_file: null
+- id: 5.4.3.3
+  title: Ensure default user umask is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 720
+    pdf_page_end: 726
+    benchmark_page_start: 719
+    benchmark_page_end: 725
+  generated: false
+  output_file: null
+- id: 6.1.1.1
+  title: Ensure journald service is enabled and active
+  assessment_status: Automated
+  source:
+    pdf_page_start: 730
+    pdf_page_end: 731
+    benchmark_page_start: 729
+    benchmark_page_end: 730
+  generated: false
+  output_file: null
+- id: 6.1.1.2
+  title: Ensure journald log file access is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 732
+    pdf_page_end: 734
+    benchmark_page_start: 731
+    benchmark_page_end: 733
+  generated: false
+  output_file: null
+- id: 6.1.1.3
+  title: Ensure journald log file rotation is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 735
+    pdf_page_end: 738
+    benchmark_page_start: 734
+    benchmark_page_end: 737
+  generated: false
+  output_file: null
+- id: 6.1.1.4
+  title: Ensure only one logging system is in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 739
+    pdf_page_end: 740
+    benchmark_page_start: 738
+    benchmark_page_end: 739
+  generated: false
+  output_file: null
+- id: 6.1.2.1.1
+  title: Ensure systemd-journal-remote is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 743
+    pdf_page_end: 744
+    benchmark_page_start: 742
+    benchmark_page_end: 743
+  generated: false
+  output_file: null
+- id: 6.1.2.1.2
+  title: Ensure systemd-journal-upload authentication is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 745
+    pdf_page_end: 748
+    benchmark_page_start: 744
+    benchmark_page_end: 747
+  generated: false
+  output_file: null
+- id: 6.1.2.1.3
+  title: Ensure systemd-journal-upload is enabled and active
+  assessment_status: Automated
+  source:
+    pdf_page_start: 749
+    pdf_page_end: 750
+    benchmark_page_start: 748
+    benchmark_page_end: 749
+  generated: false
+  output_file: null
+- id: 6.1.2.1.4
+  title: Ensure systemd-journal-remote service is not in use
+  assessment_status: Automated
+  source:
+    pdf_page_start: 751
+    pdf_page_end: 752
+    benchmark_page_start: 750
+    benchmark_page_end: 751
+  generated: false
+  output_file: null
+- id: 6.1.2.2
+  title: Ensure journald ForwardToSyslog is disabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 753
+    pdf_page_end: 756
+    benchmark_page_start: 752
+    benchmark_page_end: 755
+  generated: false
+  output_file: null
+- id: 6.1.2.3
+  title: Ensure journald Compress is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 757
+    pdf_page_end: 760
+    benchmark_page_start: 756
+    benchmark_page_end: 759
+  generated: false
+  output_file: null
+- id: 6.1.2.4
+  title: Ensure journald Storage is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 761
+    pdf_page_end: 764
+    benchmark_page_start: 760
+    benchmark_page_end: 763
+  generated: false
+  output_file: null
+- id: 6.1.3.1
+  title: Ensure rsyslog is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 766
+    pdf_page_end: 767
+    benchmark_page_start: 765
+    benchmark_page_end: 766
+  generated: false
+  output_file: null
+- id: 6.1.3.2
+  title: Ensure rsyslog service is enabled and active
+  assessment_status: Automated
+  source:
+    pdf_page_start: 768
+    pdf_page_end: 769
+    benchmark_page_start: 767
+    benchmark_page_end: 768
+  generated: false
+  output_file: null
+- id: 6.1.3.3
+  title: Ensure journald is configured to send logs to rsyslog
+  assessment_status: Automated
+  source:
+    pdf_page_start: 770
+    pdf_page_end: 773
+    benchmark_page_start: 769
+    benchmark_page_end: 772
+  generated: false
+  output_file: null
+- id: 6.1.3.4
+  title: Ensure rsyslog log file creation mode is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 774
+    pdf_page_end: 777
+    benchmark_page_start: 773
+    benchmark_page_end: 776
+  generated: false
+  output_file: null
+- id: 6.1.3.5
+  title: Ensure rsyslog logging is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 778
+    pdf_page_end: 780
+    benchmark_page_start: 777
+    benchmark_page_end: 779
+  generated: false
+  output_file: null
+- id: 6.1.3.6
+  title: Ensure rsyslog is configured to send logs to a remote log host
+  assessment_status: Manual
+  source:
+    pdf_page_start: 781
+    pdf_page_end: 784
+    benchmark_page_start: 780
+    benchmark_page_end: 783
+  generated: false
+  output_file: null
+- id: 6.1.3.7
+  title: Ensure rsyslog is not configured to receive logs from a remote client
+  assessment_status: Automated
+  source:
+    pdf_page_start: 785
+    pdf_page_end: 787
+    benchmark_page_start: 784
+    benchmark_page_end: 786
+  generated: false
+  output_file: null
+- id: 6.1.3.8
+  title: Ensure logrotate is configured
+  assessment_status: Manual
+  source:
+    pdf_page_start: 788
+    pdf_page_end: 789
+    benchmark_page_start: 787
+    benchmark_page_end: 788
+  generated: false
+  output_file: null
+- id: 6.1.4.1
+  title: Ensure access to all logfiles has been configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 791
+    pdf_page_end: 796
+    benchmark_page_start: 790
+    benchmark_page_end: 795
+  generated: false
+  output_file: null
+- id: 6.2.1.1
+  title: Ensure auditd packages are installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 800
+    pdf_page_end: 801
+    benchmark_page_start: 799
+    benchmark_page_end: 800
+  generated: false
+  output_file: null
+- id: 6.2.1.2
+  title: Ensure auditd service is enabled and active
+  assessment_status: Automated
+  source:
+    pdf_page_start: 802
+    pdf_page_end: 803
+    benchmark_page_start: 801
+    benchmark_page_end: 802
+  generated: false
+  output_file: null
+- id: 6.2.1.3
+  title: Ensure auditing for processes that start prior to auditd is enabled
+  assessment_status: Automated
+  source:
+    pdf_page_start: 804
+    pdf_page_end: 805
+    benchmark_page_start: 803
+    benchmark_page_end: 804
+  generated: false
+  output_file: null
+- id: 6.2.1.4
+  title: Ensure audit_backlog_limit is sufficient
+  assessment_status: Automated
+  source:
+    pdf_page_start: 806
+    pdf_page_end: 807
+    benchmark_page_start: 805
+    benchmark_page_end: 806
+  generated: false
+  output_file: null
+- id: 6.2.2.1
+  title: Ensure audit log storage size is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 809
+    pdf_page_end: 810
+    benchmark_page_start: 808
+    benchmark_page_end: 809
+  generated: false
+  output_file: null
+- id: 6.2.2.2
+  title: Ensure audit logs are not automatically deleted
+  assessment_status: Automated
+  source:
+    pdf_page_start: 811
+    pdf_page_end: 812
+    benchmark_page_start: 810
+    benchmark_page_end: 811
+  generated: false
+  output_file: null
+- id: 6.2.2.3
+  title: Ensure system is disabled when audit logs are full
+  assessment_status: Automated
+  source:
+    pdf_page_start: 813
+    pdf_page_end: 815
+    benchmark_page_start: 812
+    benchmark_page_end: 814
+  generated: false
+  output_file: null
+- id: 6.2.2.4
+  title: Ensure system warns when audit logs are low on space
+  assessment_status: Automated
+  source:
+    pdf_page_start: 816
+    pdf_page_end: 818
+    benchmark_page_start: 815
+    benchmark_page_end: 817
+  generated: false
+  output_file: null
+- id: 6.2.3.1
+  title: Ensure changes to system administration scope (sudoers) is collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 820
+    pdf_page_end: 822
+    benchmark_page_start: 819
+    benchmark_page_end: 821
+  generated: false
+  output_file: null
+- id: 6.2.3.2
+  title: Ensure actions as another user are always logged
+  assessment_status: Automated
+  source:
+    pdf_page_start: 823
+    pdf_page_end: 826
+    benchmark_page_start: 822
+    benchmark_page_end: 825
+  generated: false
+  output_file: null
+- id: 6.2.3.3
+  title: Ensure events that modify the sudo log file are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 827
+    pdf_page_end: 830
+    benchmark_page_start: 826
+    benchmark_page_end: 829
+  generated: false
+  output_file: null
+- id: 6.2.3.4
+  title: Ensure events that modify date and time information are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 831
+    pdf_page_end: 834
+    benchmark_page_start: 830
+    benchmark_page_end: 833
+  generated: false
+  output_file: null
+- id: 6.2.3.5
+  title: Ensure events that modify the system's network environment are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 835
+    pdf_page_end: 838
+    benchmark_page_start: 834
+    benchmark_page_end: 837
+  generated: false
+  output_file: null
+- id: 6.2.3.6
+  title: Ensure use of privileged commands are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 839
+    pdf_page_end: 842
+    benchmark_page_start: 838
+    benchmark_page_end: 841
+  generated: false
+  output_file: null
+- id: 6.2.3.7
+  title: Ensure unsuccessful file access attempts are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 843
+    pdf_page_end: 846
+    benchmark_page_start: 842
+    benchmark_page_end: 845
+  generated: false
+  output_file: null
+- id: 6.2.3.8
+  title: Ensure events that modify user/group information are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 847
+    pdf_page_end: 850
+    benchmark_page_start: 846
+    benchmark_page_end: 849
+  generated: false
+  output_file: null
+- id: 6.2.3.9
+  title: Ensure discretionary access control permission modification events are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 851
+    pdf_page_end: 855
+    benchmark_page_start: 850
+    benchmark_page_end: 854
+  generated: false
+  output_file: null
+- id: 6.2.3.10
+  title: Ensure successful file system mounts are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 856
+    pdf_page_end: 859
+    benchmark_page_start: 855
+    benchmark_page_end: 858
+  generated: false
+  output_file: null
+- id: 6.2.3.11
+  title: Ensure session initiation information is collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 860
+    pdf_page_end: 863
+    benchmark_page_start: 859
+    benchmark_page_end: 862
+  generated: false
+  output_file: null
+- id: 6.2.3.12
+  title: Ensure login and logout events are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 864
+    pdf_page_end: 866
+    benchmark_page_start: 863
+    benchmark_page_end: 865
+  generated: false
+  output_file: null
+- id: 6.2.3.13
+  title: Ensure file deletion events by users are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 867
+    pdf_page_end: 870
+    benchmark_page_start: 866
+    benchmark_page_end: 869
+  generated: false
+  output_file: null
+- id: 6.2.3.14
+  title: Ensure events that modify the system's Mandatory Access Controls are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 871
+    pdf_page_end: 873
+    benchmark_page_start: 870
+    benchmark_page_end: 872
+  generated: false
+  output_file: null
+- id: 6.2.3.15
+  title: Ensure successful and unsuccessful attempts to use the chcon command are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 874
+    pdf_page_end: 877
+    benchmark_page_start: 873
+    benchmark_page_end: 876
+  generated: false
+  output_file: null
+- id: 6.2.3.16
+  title: Ensure successful and unsuccessful attempts to use the setfacl command are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 878
+    pdf_page_end: 881
+    benchmark_page_start: 877
+    benchmark_page_end: 880
+  generated: false
+  output_file: null
+- id: 6.2.3.17
+  title: Ensure successful and unsuccessful attempts to use the chacl command are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 882
+    pdf_page_end: 885
+    benchmark_page_start: 881
+    benchmark_page_end: 884
+  generated: false
+  output_file: null
+- id: 6.2.3.18
+  title: Ensure successful and unsuccessful attempts to use the usermod command are collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 886
+    pdf_page_end: 889
+    benchmark_page_start: 885
+    benchmark_page_end: 888
+  generated: false
+  output_file: null
+- id: 6.2.3.19
+  title: Ensure kernel module loading unloading and modification is collected
+  assessment_status: Automated
+  source:
+    pdf_page_start: 890
+    pdf_page_end: 894
+    benchmark_page_start: 889
+    benchmark_page_end: 893
+  generated: false
+  output_file: null
+- id: 6.2.3.20
+  title: Ensure the audit configuration is immutable
+  assessment_status: Automated
+  source:
+    pdf_page_start: 895
+    pdf_page_end: 896
+    benchmark_page_start: 894
+    benchmark_page_end: 895
+  generated: false
+  output_file: null
+- id: 6.2.3.21
+  title: Ensure the running and on disk configuration is the same
+  assessment_status: Manual
+  source:
+    pdf_page_start: 897
+    pdf_page_end: 898
+    benchmark_page_start: 896
+    benchmark_page_end: 897
+  generated: false
+  output_file: null
+- id: 6.2.4.1
+  title: Ensure audit log files mode is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 900
+    pdf_page_end: 902
+    benchmark_page_start: 899
+    benchmark_page_end: 901
+  generated: false
+  output_file: null
+- id: 6.2.4.2
+  title: Ensure audit log files owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 903
+    pdf_page_end: 905
+    benchmark_page_start: 902
+    benchmark_page_end: 904
+  generated: false
+  output_file: null
+- id: 6.2.4.3
+  title: Ensure audit log files group owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 906
+    pdf_page_end: 907
+    benchmark_page_start: 905
+    benchmark_page_end: 906
+  generated: false
+  output_file: null
+- id: 6.2.4.4
+  title: Ensure the audit log file directory mode is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 908
+    pdf_page_end: 910
+    benchmark_page_start: 907
+    benchmark_page_end: 909
+  generated: false
+  output_file: null
+- id: 6.2.4.5
+  title: Ensure audit configuration files mode is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 911
+    pdf_page_end: 912
+    benchmark_page_start: 910
+    benchmark_page_end: 911
+  generated: false
+  output_file: null
+- id: 6.2.4.6
+  title: Ensure audit configuration files owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 913
+    pdf_page_end: 914
+    benchmark_page_start: 912
+    benchmark_page_end: 913
+  generated: false
+  output_file: null
+- id: 6.2.4.7
+  title: Ensure audit configuration files group owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 915
+    pdf_page_end: 916
+    benchmark_page_start: 914
+    benchmark_page_end: 915
+  generated: false
+  output_file: null
+- id: 6.2.4.8
+  title: Ensure audit tools mode is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 917
+    pdf_page_end: 919
+    benchmark_page_start: 916
+    benchmark_page_end: 918
+  generated: false
+  output_file: null
+- id: 6.2.4.9
+  title: Ensure audit tools owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 920
+    pdf_page_end: 921
+    benchmark_page_start: 919
+    benchmark_page_end: 920
+  generated: false
+  output_file: null
+- id: 6.2.4.10
+  title: Ensure audit tools group owner is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 922
+    pdf_page_end: 923
+    benchmark_page_start: 921
+    benchmark_page_end: 922
+  generated: false
+  output_file: null
+- id: 6.3.1
+  title: Ensure AIDE is installed
+  assessment_status: Automated
+  source:
+    pdf_page_start: 925
+    pdf_page_end: 926
+    benchmark_page_start: 924
+    benchmark_page_end: 925
+  generated: false
+  output_file: null
+- id: 6.3.2
+  title: Ensure filesystem integrity is regularly checked
+  assessment_status: Automated
+  source:
+    pdf_page_start: 927
+    pdf_page_end: 928
+    benchmark_page_start: 926
+    benchmark_page_end: 927
+  generated: false
+  output_file: null
+- id: 6.3.3
+  title: Ensure cryptographic mechanisms are used to protect the integrity of audit tools
+  assessment_status: Automated
+  source:
+    pdf_page_start: 929
+    pdf_page_end: 932
+    benchmark_page_start: 928
+    benchmark_page_end: 931
+  generated: false
+  output_file: null
+- id: 7.1.1
+  title: Ensure permissions on /etc/passwd are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 935
+    pdf_page_end: 936
+    benchmark_page_start: 934
+    benchmark_page_end: 935
+  generated: false
+  output_file: null
+- id: 7.1.2
+  title: Ensure permissions on /etc/passwd- are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 937
+    pdf_page_end: 938
+    benchmark_page_start: 936
+    benchmark_page_end: 937
+  generated: false
+  output_file: null
+- id: 7.1.3
+  title: Ensure permissions on /etc/group are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 939
+    pdf_page_end: 940
+    benchmark_page_start: 938
+    benchmark_page_end: 939
+  generated: false
+  output_file: null
+- id: 7.1.4
+  title: Ensure permissions on /etc/group- are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 941
+    pdf_page_end: 942
+    benchmark_page_start: 940
+    benchmark_page_end: 941
+  generated: false
+  output_file: null
+- id: 7.1.5
+  title: Ensure permissions on /etc/shadow are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 943
+    pdf_page_end: 944
+    benchmark_page_start: 942
+    benchmark_page_end: 943
+  generated: false
+  output_file: null
+- id: 7.1.6
+  title: Ensure permissions on /etc/shadow- are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 945
+    pdf_page_end: 946
+    benchmark_page_start: 944
+    benchmark_page_end: 945
+  generated: false
+  output_file: null
+- id: 7.1.7
+  title: Ensure permissions on /etc/gshadow are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 947
+    pdf_page_end: 948
+    benchmark_page_start: 946
+    benchmark_page_end: 947
+  generated: false
+  output_file: null
+- id: 7.1.8
+  title: Ensure permissions on /etc/gshadow- are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 949
+    pdf_page_end: 950
+    benchmark_page_start: 948
+    benchmark_page_end: 949
+  generated: false
+  output_file: null
+- id: 7.1.9
+  title: Ensure permissions on /etc/shells are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 951
+    pdf_page_end: 952
+    benchmark_page_start: 950
+    benchmark_page_end: 951
+  generated: false
+  output_file: null
+- id: 7.1.10
+  title: Ensure permissions on /etc/security/opasswd are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 953
+    pdf_page_end: 954
+    benchmark_page_start: 952
+    benchmark_page_end: 953
+  generated: false
+  output_file: null
+- id: 7.1.11
+  title: Ensure world writable files and directories are secured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 955
+    pdf_page_end: 958
+    benchmark_page_start: 954
+    benchmark_page_end: 957
+  generated: false
+  output_file: null
+- id: 7.1.12
+  title: Ensure no files or directories without an owner and a group exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 959
+    pdf_page_end: 961
+    benchmark_page_start: 958
+    benchmark_page_end: 960
+  generated: false
+  output_file: null
+- id: 7.1.13
+  title: Ensure SUID and SGID files are reviewed
+  assessment_status: Manual
+  source:
+    pdf_page_start: 962
+    pdf_page_end: 964
+    benchmark_page_start: 961
+    benchmark_page_end: 963
+  generated: false
+  output_file: null
+- id: 7.2.1
+  title: Ensure accounts in /etc/passwd use shadowed passwords
+  assessment_status: Automated
+  source:
+    pdf_page_start: 966
+    pdf_page_end: 968
+    benchmark_page_start: 965
+    benchmark_page_end: 967
+  generated: false
+  output_file: null
+- id: 7.2.2
+  title: Ensure /etc/shadow password fields are not empty
+  assessment_status: Automated
+  source:
+    pdf_page_start: 969
+    pdf_page_end: 970
+    benchmark_page_start: 968
+    benchmark_page_end: 969
+  generated: false
+  output_file: null
+- id: 7.2.3
+  title: Ensure all groups in /etc/passwd exist in /etc/group
+  assessment_status: Automated
+  source:
+    pdf_page_start: 971
+    pdf_page_end: 972
+    benchmark_page_start: 970
+    benchmark_page_end: 971
+  generated: false
+  output_file: null
+- id: 7.2.4
+  title: Ensure shadow group is empty
+  assessment_status: Automated
+  source:
+    pdf_page_start: 973
+    pdf_page_end: 974
+    benchmark_page_start: 972
+    benchmark_page_end: 973
+  generated: false
+  output_file: null
+- id: 7.2.5
+  title: Ensure no duplicate UIDs exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 975
+    pdf_page_end: 975
+    benchmark_page_start: 974
+    benchmark_page_end: 974
+  generated: false
+  output_file: null
+- id: 7.2.6
+  title: Ensure no duplicate GIDs exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 976
+    pdf_page_end: 977
+    benchmark_page_start: 975
+    benchmark_page_end: 976
+  generated: false
+  output_file: null
+- id: 7.2.7
+  title: Ensure no duplicate user names exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 978
+    pdf_page_end: 979
+    benchmark_page_start: 977
+    benchmark_page_end: 978
+  generated: false
+  output_file: null
+- id: 7.2.8
+  title: Ensure no duplicate group names exist
+  assessment_status: Automated
+  source:
+    pdf_page_start: 980
+    pdf_page_end: 981
+    benchmark_page_start: 979
+    benchmark_page_end: 980
+  generated: false
+  output_file: null
+- id: 7.2.9
+  title: Ensure local interactive user home directories are configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 982
+    pdf_page_end: 986
+    benchmark_page_start: 981
+    benchmark_page_end: 985
+  generated: false
+  output_file: null
+- id: 7.2.10
+  title: Ensure local interactive user dot files access is configured
+  assessment_status: Automated
+  source:
+    pdf_page_start: 987
+    pdf_page_end: 993
+    benchmark_page_start: 986
+    benchmark_page_end: 992
+  generated: false
+  output_file: null
