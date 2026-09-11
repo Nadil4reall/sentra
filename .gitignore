@@ -8,3 +8,7 @@ tmp/
 # The CIS Benchmark is licensed source material and must never be committed.
 benchmark/*.pdf
 
+
+# Full CIS benchmark conversion - local only
+data/controls/*.yaml
+data/catalog.full.yaml
