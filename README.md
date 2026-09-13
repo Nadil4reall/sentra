@@ -101,3 +101,24 @@ The suite covers heading and status detection, multi-page boundaries, both page-
 systems, missing fields, YAML round trips, raw-text preservation, verification warnings,
 structured CIS/MITRE mappings, malformed-table fallback, and the local benchmark's
 first-five integration boundaries.
+
+## Milestone 2 — PoC Control Selection
+
+Milestone 2 selects ten representative controls across kernel modules, networking,
+firewalls, SSH, auditing, and file permissions. This deliberately small set keeps later
+proof-of-concept execution and validation focused while the complete 312-control
+CIS-derived catalog continues to exist locally under `data/controls/`.
+
+CIS source records are not rewritten. The PoC index is stored in
+`data/poc/poc_controls.yaml`, while SENTRA-derived target facts, compatibility evidence,
+sandbox requirements, and review state are kept separately under `data/poc/enriched/`.
+Every enrichment remains `needs_review`.
+
+This milestone performs data preparation and read-only validation only. It does not run
+Audit or Remediation commands, create a sandbox, connect to a host, or modify a system.
+
+Display the validated control-set summary with:
+
+```bash
+.venv/bin/python -m src.poc_summary
+```

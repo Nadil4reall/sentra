@@ -1,0 +1,42 @@
+control_id: "7.1.1"
+
+sentra:
+  category: "file_permissions"
+
+  affected_services: []
+
+  affected_files:
+    - "/etc/passwd"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "passwd_file_mode"
+    - "passwd_file_owner_uid"
+    - "passwd_file_group_gid"
+
+  prerequisites: []
+
+  possible_conflicts:
+    - "/etc/passwd must remain readable for system utilities to operate."
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/7_1_1.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS requires mode 0644 or more restrictive with UID 0/root and GID 0/root."
+      - "CIS also states that /etc/passwd must remain readable for system utilities."
+      - "No affected service, package, or CIS Impact is explicit."
+      - "Requires manual enrichment review"

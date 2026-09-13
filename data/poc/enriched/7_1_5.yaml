@@ -1,0 +1,42 @@
+control_id: "7.1.5"
+
+sentra:
+  category: "file_permissions"
+
+  affected_services: []
+
+  affected_files:
+    - "/etc/shadow"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "shadow_file_mode"
+    - "shadow_file_owner_uid"
+    - "shadow_file_group_gid"
+    - "shadow_group_gid"
+
+  prerequisites: []
+
+  possible_conflicts: []
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/7_1_5.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS requires mode 0640 or more restrictive, owner root, and group root or shadow."
+      - "GID 42 is shown as an example/default for shadow; target profiling must resolve the target's actual shadow group."
+      - "No affected service, package, or CIS Impact is explicit."
+      - "Requires manual enrichment review"

@@ -1,0 +1,40 @@
+control_id: "6.2.1.2"
+
+sentra:
+  category: "auditing"
+
+  affected_services:
+    - "auditd"
+
+  affected_files: []
+  affected_packages: []
+
+  required_target_facts:
+    - "auditd_service_present"
+    - "auditd_service_mask_status"
+    - "auditd_service_enabled"
+    - "auditd_service_active"
+
+  prerequisites: []
+  possible_conflicts: []
+
+  sandbox:
+    required: true
+    service_health_checks:
+      - "auditd"
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: true
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/6_2_1_2.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS explicitly identifies auditd and checks enabled and active state; remediation also changes masked state."
+      - "No affected package, file, or CIS Impact is explicit."
+      - "Requires manual enrichment review"

@@ -1,0 +1,49 @@
+control_id: "3.3.1"
+
+sentra:
+  category: "network"
+
+  affected_services: []
+
+  affected_files:
+    - "/etc/sysctl.conf"
+    - "/etc/sysctl.d/*.conf"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "ipv4_forwarding_status"
+    - "ipv6_enabled"
+    - "ipv6_forwarding_status"
+    - "router_role"
+    - "csp_hosted"
+    - "sysctl_parameter_sources"
+
+  prerequisites: []
+
+  possible_conflicts:
+    - "Systems configured as routers require IP forwarding."
+    - "Many Cloud Service Provider hosted systems require IP forwarding."
+    - "Later sysctl assignments can override an earlier setting."
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/3_3_1.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS Impact explicitly requires review for router and many CSP-hosted systems."
+      - "The IPv6 parameter applies only when IPv6 is enabled."
+      - "CIS Audit and Remediation document canonical sysctl precedence."
+      - "No affected package or service is explicit, so those fields remain empty."
+      - "Requires manual enrichment review"

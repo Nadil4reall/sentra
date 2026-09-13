@@ -1,0 +1,52 @@
+control_id: "5.1.20"
+
+sentra:
+  category: "ssh"
+
+  affected_services:
+    - "ssh"
+
+  affected_files:
+    - "/etc/ssh/sshd_config"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "ssh_installed"
+    - "ssh_service_status"
+    - "sshd_permit_root_login_effective"
+    - "sshd_match_directives_present"
+    - "sshd_include_locations_enabled"
+    - "individual_administrator_account_available"
+    - "root_escalation_path_available"
+
+  prerequisites: []
+
+  possible_conflicts:
+    - "Match directives can change the effective PermitRootLogin value for specific connections."
+    - "Include ordering and first-occurrence precedence can change the effective setting."
+
+  sandbox:
+    required: true
+    service_health_checks:
+      - "ssh"
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: true
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/5_1_20.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "The title and content explicitly concern root access through SSH, and remediation names /etc/ssh/sshd_config."
+      - "Connection-specific Match blocks may require additional effective-configuration audits."
+      - "Include locations are environment-specific and require manual edit-location review."
+      - "The rationale describes individual administrator authentication followed by root escalation; availability of that access path requires review."
+      - "The description calls the default prohibit-password while Default Value says without-password; preserve and review this source terminology."
+      - "No package, exact systemd unit, or CIS Impact is explicit."
+      - "Requires manual enrichment review"

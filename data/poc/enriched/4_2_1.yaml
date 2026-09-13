@@ -1,0 +1,43 @@
+control_id: "4.2.1"
+
+sentra:
+  category: "firewall"
+
+  affected_services: []
+  affected_files: []
+
+  affected_packages:
+    - "ufw"
+    - "iptables"
+
+  required_target_facts:
+    - "ufw_installed"
+    - "iptables_installed"
+    - "installed_firewall_utilities"
+
+  prerequisites:
+    - "UFW depends on the iptables package."
+
+  possible_conflicts:
+    - "Another firewall utility is already installed or configured."
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/4_2_1.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS explicitly identifies the UFW package and its dependency on the iptables package."
+      - "CIS states that only one firewall utility should be installed and configured."
+      - "The CIS Impact field is null and no affected file or service is explicit, so those fields remain empty."
+      - "Requires manual enrichment review"

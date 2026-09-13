@@ -1,0 +1,52 @@
+control_id: "4.2.3"
+
+sentra:
+  category: "firewall"
+
+  affected_services:
+    - "ufw.service"
+    - "ssh"
+
+  affected_files: []
+  affected_packages: []
+
+  required_target_facts:
+    - "ufw_service_mask_status"
+    - "ufw_service_enabled"
+    - "ufw_service_active"
+    - "ufw_status"
+    - "remote_network_session_active"
+    - "ssh_session_active"
+    - "ufw_ssh_port_22_rule_present"
+
+  prerequisites:
+    - "When preserving SSH access on TCP port 22, add an allow rule before enabling UFW."
+
+  possible_conflicts:
+    - "Enabling or starting UFW flushes its chains and may drop existing connections, including SSH."
+    - "Changing firewall settings while connected over a network can result in being locked out of the system."
+
+  sandbox:
+    required: true
+    service_health_checks:
+      - "ufw.service"
+      - "ssh"
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: true
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/4_2_3.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS explicitly audits and changes UFW masked, enabled, active, and firewall status."
+      - "CIS warns that chain flushing can drop SSH connections and that network changes can cause lockout."
+      - "The documented safeguard assumes SSH on TCP port 22; alternate SSH ports require manual review."
+      - "CIS documents an SSH-time enable prompt and a force option; neither is represented as an automatic action."
+      - "No affected file or package is explicit, so those fields remain empty."
+      - "Requires manual enrichment review"

@@ -1,0 +1,46 @@
+control_id: "1.1.1.1"
+
+sentra:
+  category: "kernel"
+
+  affected_services: []
+
+  affected_files:
+    - "/etc/modprobe.d/cramfs.conf"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "cramfs_filesystem_required"
+    - "cramfs_module_available_in_installed_kernels"
+    - "cramfs_module_precompiled_into_kernel"
+    - "cramfs_module_loaded"
+    - "cramfs_module_loadable"
+    - "cramfs_module_denylisted"
+
+  prerequisites: []
+
+  possible_conflicts:
+    - "The target requires the cramfs filesystem type."
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/1_1_1_1.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "The audit explicitly checks module availability, precompiled status, loaded state, loadability, and deny-list status."
+      - "The remediation explicitly targets /etc/modprobe.d/cramfs.conf."
+      - "The CIS Impact field is null and no package or service is identified, so those fields remain empty."
+      - "The CIS source is unverified with code_integrity needs_review; no extracted command was executed."
+      - "Requires manual enrichment review"

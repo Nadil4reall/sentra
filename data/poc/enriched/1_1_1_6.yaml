@@ -1,0 +1,48 @@
+control_id: "1.1.1.6"
+
+sentra:
+  category: "kernel"
+
+  affected_services: []
+
+  affected_files:
+    - "/etc/modprobe.d/overlayfs.conf"
+
+  affected_packages: []
+
+  required_target_facts:
+    - "overlayfs_module_available_in_installed_kernels"
+    - "overlayfs_module_precompiled_into_kernel"
+    - "overlayfs_module_loaded"
+    - "overlayfs_module_loadable"
+    - "overlayfs_module_denylisted"
+    - "container_applications_in_use"
+
+  prerequisites: []
+
+  possible_conflicts:
+    - "If Docker, Kubernetes, Podman, LXC, or another container application is detected, disabling overlayfs may severely disrupt containerization and requires a compatibility warning."
+
+  sandbox:
+    required: true
+    service_health_checks: []
+
+  validation:
+    pre_audit_required: true
+    post_audit_required: true
+    service_check_required: false
+
+  deployment:
+    administrator_approval_required: true
+
+  evidence:
+    source_control: "data/controls/1_1_1_6.yaml"
+    derivation_status: "needs_review"
+    notes:
+      - "CIS Impact explicitly names Docker, Kubernetes, Podman, Linux Containers (LXC), and other container applications."
+      - "CIS warns that disabling overlayfs may severely disrupt containerization."
+      - "The remediation explicitly targets /etc/modprobe.d/overlayfs.conf."
+      - "The CIS scripts distinguish overlayfs from the derived module check name overlay; future profiling must review this naming detail."
+      - "No package or concrete service unit is explicitly identified, so those fields remain empty."
+      - "This file represents compatibility evidence only; it does not implement container detection or execute the control."
+      - "Requires manual enrichment review"

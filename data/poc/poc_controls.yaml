@@ -1,0 +1,27 @@
+benchmark:
+  name: "CIS Ubuntu Linux 24.04 LTS Benchmark"
+  version: "1.0.0"
+
+poc:
+  total_controls: 10
+  controls:
+    - id: "1.1.1.1"
+      category: "kernel"
+    - id: "1.1.1.6"
+      category: "kernel"
+    - id: "3.3.1"
+      category: "network"
+    - id: "4.2.1"
+      category: "firewall"
+    - id: "4.2.3"
+      category: "firewall"
+    - id: "5.1.19"
+      category: "ssh"
+    - id: "5.1.20"
+      category: "ssh"
+    - id: "6.2.1.2"
+      category: "auditing"
+    - id: "7.1.1"
+      category: "file_permissions"
+    - id: "7.1.5"
+      category: "file_permissions"
