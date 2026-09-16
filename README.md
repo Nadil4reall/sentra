@@ -122,3 +122,44 @@ Display the validated control-set summary with:
 ```bash
 .venv/bin/python -m src.poc_summary
 ```
+
+## Milestone 3 — Local Ubuntu Target Profiler
+
+Milestone 3 adds a read-only profiler that runs on the machine being inspected. It
+derives its fact registry from all ten Milestone 2 enrichment files, preserves the
+requesting control IDs, and emits a validated YAML profile. It does not accept a
+target address, connect over SSH, execute CIS Audit or Remediation text, make control
+decisions, or modify the host.
+
+List the exact required facts without profiling the current machine:
+
+```bash
+.venv/bin/python -m src.target_profiler.cli --list-required-facts
+```
+
+On an Ubuntu 24.04 LTS target, print a local profile to standard output:
+
+```bash
+.venv/bin/python -m src.target_profiler.cli
+```
+
+Or write the YAML profile to an ignored local artifact path:
+
+```bash
+.venv/bin/python -m src.target_profiler.cli \
+  --format yaml \
+  --output data/profiles/target-profile.yaml
+```
+
+File output is written atomically with owner-only (`0600`) permissions.
+
+The profiler reads operating-system metadata, `/proc`, package metadata, configuration
+files, and file ownership/modes. Commands are used only when a fact has no equivalent
+safe file source, through a strict argument allowlist with `shell=False`. Some
+inspection commands, notably UFW inspection and `sshd -T`, may need elevated
+read-only access to return a value; a permission failure is recorded as `unavailable`
+with a null value, never as `false`.
+
+Only Ubuntu 24.04 is a supported profiling target. Other systems retain their real OS
+identity and receive explicit `unsupported` fact results instead of Ubuntu values.
+Compatibility analysis and remediation remain outside this milestone.

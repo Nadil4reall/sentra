@@ -12,3 +12,6 @@ benchmark/*.pdf
 # Full CIS benchmark conversion - local only
 data/controls/*.yaml
 data/catalog.full.yaml
+
+# Milestone 3 host profiles are machine-generated local artifacts.
+data/profiles/
