@@ -15,3 +15,7 @@ data/catalog.full.yaml
 
 # Milestone 3 host profiles are machine-generated local artifacts.
 data/profiles/
+
+# Milestone 4 compatibility reports are machine-generated local artifacts.
+data/compatibility/*
+!data/compatibility/.gitkeep
