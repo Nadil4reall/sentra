@@ -234,15 +234,13 @@ def test_ip_forwarding_router_role_true_warns_even_if_csp_is_unknown() -> None:
     assert "router-role" in findings[0].explanation
 
 
-def test_ip_forwarding_multiple_sysctl_sources_require_review() -> None:
+def test_ip_forwarding_candidate_paths_do_not_imply_precedence_conflict() -> None:
     findings = evaluate_control_rules(
         "3.3.1",
         ip_evidence(sources=["/etc/sysctl.d/10-a.conf", "/etc/sysctl.conf"]),
     )
 
-    assert rule_ids(findings) == ["ip-forwarding-source-precedence-review"]
-    assert decisions(findings) == [CompatibilityDecision.REVIEW_REQUIRED]
-    assert "assignments and precedence" in findings[0].explanation
+    assert findings == ()
 
 
 def test_ufw_remote_session_triggers_documented_connection_warning() -> None:
@@ -506,7 +504,7 @@ def test_ufw_missing_iptables_prerequisite_warns() -> None:
     assert decisions(findings) == [CompatibilityDecision.WARNING]
 
 
-def test_ufw_other_installed_firewall_utility_warns() -> None:
+def test_ufw_other_installed_firewall_package_requires_configuration_review() -> None:
     findings = evaluate_control_rules(
         "4.2.1",
         firewall_install_evidence(
@@ -515,8 +513,10 @@ def test_ufw_other_installed_firewall_utility_warns() -> None:
     )
 
     assert rule_ids(findings) == ["ufw-other-firewall-utility"]
-    assert decisions(findings) == [CompatibilityDecision.WARNING]
+    assert decisions(findings) == [CompatibilityDecision.REVIEW_REQUIRED]
     assert "nftables" in findings[0].explanation
+    assert "package installation only" in findings[0].explanation
+    assert "does not establish" in findings[0].explanation
 
 
 def auditd_evidence(

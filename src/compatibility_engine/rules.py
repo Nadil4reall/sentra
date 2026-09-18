@@ -241,7 +241,8 @@ def _ip_forwarding_role(
 _IP_SOURCES = _description(
     "ip-forwarding-source-precedence-review",
     "3.3.1",
-    "Preserve forwarding-state and sysctl-source uncertainty.",
+    "Validate forwarding-state evidence without inferring assignments, conflicts, "
+    "or effective precedence from candidate sysctl source paths.",
     [
         "possible_conflicts: Later sysctl assignments can override an earlier setting.",
         "evidence.notes: The IPv6 parameter applies only when IPv6 is enabled.",
@@ -277,14 +278,10 @@ def _ip_forwarding_sources(
             return gap
         if not _is_int(ipv6_forwarding.value):
             return _invalid_type(_IP_SOURCES, ipv6_forwarding.fact, "integer")
-    if len(sources.value) > 1:
-        return _finding(
-            _IP_SOURCES,
-            CompatibilityDecision.REVIEW_REQUIRED,
-            "Multiple sysctl source files are present; their assignments and "
-            "precedence require review. Current forwarding values alone are not a "
-            "safety conclusion.",
-        )
+    # This fact contains candidate file paths only.  Their number does not show
+    # whether any path assigns an IP-forwarding parameter, whether assignments
+    # conflict, or which assignment is effective.  Exact assignment evidence
+    # would be required before this rule could identify a precedence concern.
     return None
 
 
@@ -319,8 +316,8 @@ def _ufw_iptables_prerequisite(
 _UFW_OTHER = _description(
     "ufw-other-firewall-utility",
     "4.2.1",
-    "Identify another installed firewall utility without treating iptables as a "
-    "conflict.",
+    "Require review of another installed firewall package without treating package "
+    "presence or the iptables dependency as a configured competing firewall.",
     [
         "possible_conflicts: Another firewall utility is already installed or "
         "configured.",
@@ -344,8 +341,12 @@ def _ufw_other_firewall(
     if other:
         return _finding(
             _UFW_OTHER,
-            CompatibilityDecision.WARNING,
-            "Another firewall utility is installed: " + ", ".join(other) + ".",
+            CompatibilityDecision.REVIEW_REQUIRED,
+            "Additional firewall package presence was observed ("
+            + ", ".join(other)
+            + "), but installed_firewall_utilities records package installation "
+            "only and does not establish an independently active or configured "
+            "competing firewall.",
         )
     return None
 

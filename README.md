@@ -31,7 +31,7 @@ M5  Test the candidate control in a sandbox.                 NEXT
 | M1 — benchmark ingestion | Machine-readable CIS control catalog | ✅ Implemented |
 | M2 — control enrichment | Ten PoC knowledge records | ✅ Implemented; metadata remains `needs_review` |
 | M3 — target profiling | Read-only Ubuntu 24.04 target profile | ✅ Implemented and validated on one real target |
-| M4 — compatibility analysis | Evidence-traceable compatibility report | ✅ Implemented and tested with synthetic fixtures; real-profile run pending |
+| M4 — compatibility analysis | Evidence-traceable compatibility report | ✅ Implemented; normal and elevated real-profile reports rerun and reviewed |
 | M5 — sandbox validation | Isolated control experiment | 🔜 Next |
 | M6–M8 | Controller/agent, deployment verification, dashboard/audit trail | Planned |
 
@@ -48,8 +48,9 @@ M5  Test the candidate control in a sandbox.                 NEXT
 | M4 automated tests | 65 passed |
 | Full M1–M4 suite | 187 passed, 0 failed |
 
-Automated tests establish software behavior. The recorded Ubuntu experiment establishes
-representative M3 host evidence. It does **not** establish a real-host M4 result.
+Automated tests establish software behavior. The recorded Ubuntu experiment now has
+normal and elevated M4 reports, but this remains evidence from one target rather than
+universal Ubuntu validation.
 
 ## Main architecture
 
@@ -255,9 +256,9 @@ compliance results or invent new dependencies.
 | <code>1.1.1&#46;1</code> | `cramfs-required-workload` | `possible_conflicts`: target workload requires cramfs |
 | <code>1.1.1&#46;6</code> | `overlayfs-container-workload` | `possible_conflicts` + `evidence.notes`: container disruption concern |
 | `3.3.1` | `ip-forwarding-deployment-role` | `possible_conflicts`: router and CSP deployment roles |
-| `3.3.1` | `ip-forwarding-source-precedence-review` | `possible_conflicts` + `evidence.notes`: sysctl precedence and IPv6 context |
+| `3.3.1` | `ip-forwarding-source-precedence-review` | Candidate paths are validated as evidence but do not prove forwarding assignments or precedence |
 | `4.2.1` | `ufw-iptables-prerequisite` | `prerequisites`: UFW depends on iptables |
-| `4.2.1` | `ufw-other-firewall-utility` | `possible_conflicts` + `evidence.notes`: another firewall utility |
+| `4.2.1` | `ufw-other-firewall-utility` | Additional package presence requires review; it does not prove an active/configured competitor |
 | `4.2.3` | `ufw-service-state-evidence` | `required_target_facts` + `evidence.notes`: UFW service/status evidence |
 | `4.2.3` | `ufw-live-remote-session` | `possible_conflicts`: connection-loss and lockout risk |
 | `4.2.3` | `ufw-ssh-22-safeguard` | `prerequisites` + `evidence.notes`: documented TCP/22 safeguard and alternate-port review |
@@ -277,6 +278,10 @@ Examples of conservative behavior:
 - a non-empty container-application list triggers the documented OverlayFS warning;
 - unknown router or CSP deployment context requires review—forwarding value `0` alone
   is not treated as a conclusion;
+- multiple candidate sysctl paths do not imply relevant assignments, conflicts, or an
+  effective forwarding override; exact assignment evidence is a future enhancement;
+- installed `nftables` does not trigger a warning by itself; package-only evidence
+  requires review because independent configuration is not established;
 - live remote-management evidence preserves the documented UFW lockout concern;
 - SSH TCP/22 evidence is not used to assume every SSH session uses that port;
 - unsupported administrator fallback/escalation context requires review; and
@@ -331,16 +336,27 @@ language. Identical evidence produces the same compatibility decision.
 |---|---|
 | Core, rule, acceptance, determinism, serialization, and safety tests | 65 passed |
 | Full M1–M4 regression suite | 187 passed, 0 failed |
-| Real M3-profile evaluation by M4 | **Not yet run or manually reviewed** |
+| Real normal-profile report | 3 `no_known_conflict`, 1 `warning`, 4 `review_required`, 2 `insufficient_evidence` |
+| Real elevated-profile report | 3 `no_known_conflict`, 0 `warning`, 7 `review_required`, 0 `insufficient_evidence` |
+| Manual semantic review | Completed for both reports; all 10 results in each remain provisional |
 
-Synthetic fixtures are test evidence, not real-Ubuntu validation. A real M4 result must
-not be claimed until the following command is run against a real M3 profile available
-locally and its report is manually reviewed:
+Synthetic fixtures remain distinct from real-target evidence. The two real reports
+come from the same recorded Ubuntu target under normal and elevated execution contexts;
+they do not establish broader compatibility across Ubuntu systems. Reproduce the normal
+report with:
 
 ```bash
 python -m src.compatibility_engine.cli \
   --profile data/profiles/target-profile.yaml \
   --output data/compatibility/target-profile-compatibility.yaml
+```
+
+Reproduce the elevated-profile report from its already collected YAML data with:
+
+```bash
+python -m src.compatibility_engine.cli \
+  --profile data/profiles/target-profile-elevated.yaml \
+  --output data/compatibility/target-profile-elevated-compatibility.yaml
 ```
 
 List the auditable rule catalog without loading a profile:
@@ -376,7 +392,8 @@ python -m src.compatibility_engine.cli --list-rules
   execution context.
 - Operational context that cannot be determined technically remains explicit rather
   than being guessed.
-- M4 has not yet been run against and manually reviewed with a real M3 profile.
+- M4 real-profile validation currently covers one Ubuntu target under normal and
+  elevated execution contexts.
 
 ## Data storage
 
