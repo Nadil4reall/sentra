@@ -4,11 +4,15 @@
 
 SENTRA is a university cybersecurity research Proof of Concept. It converts CIS
 recommendations into structured records, adds reviewable SENTRA knowledge, profiles an
-Ubuntu target without changing it, and evaluates dependency and compatibility evidence.
+Ubuntu target without changing it, evaluates dependency and compatibility evidence, and
+runs tightly bounded control experiments in an acknowledged Ubuntu sandbox.
 
-**Milestones 1–4 are implemented. Milestone 5 sandbox validation is next.** SENTRA is
-not a production hardening platform, a CIS compliance scanner, or a claim of complete
-CIS enforcement. No selected control has been applied by Milestones 1–4.
+**Milestones 1–5 are implemented at PoC scope, and the initial three-control M5
+sandbox validation scope is complete.** SENTRA is not a production hardening platform,
+a CIS compliance scanner, or a claim of complete CIS enforcement. M1–M4 remain
+non-mutating. M5's intended mutation surface is limited to explicit adapters and
+approval gates; its two controlled executions and one deliberately non-mutating
+audit/plan are documented below.
 
 ## The research story
 
@@ -21,7 +25,7 @@ M3  What is actually on Ubuntu?
                 ↓
 M4  Do the control requirements and target evidence conflict?
                 ↓
-M5  Test the candidate control in a sandbox.                 NEXT
+M5  What happens when the candidate runs in a sandbox?       INITIAL VALIDATION
 ```
 
 ## Project status
@@ -32,7 +36,7 @@ M5  Test the candidate control in a sandbox.                 NEXT
 | M2 — control enrichment | Ten PoC knowledge records | ✅ Implemented; metadata remains `needs_review` |
 | M3 — target profiling | Read-only Ubuntu 24.04 target profile | ✅ Implemented and validated on one real target |
 | M4 — compatibility analysis | Evidence-traceable compatibility report | ✅ Implemented; normal and elevated real-profile reports rerun and reviewed |
-| M5 — sandbox validation | Isolated control experiment | 🔜 Next |
+| M5 — sandbox validation | Isolated, evidence-traceable control experiment | ✅ Three initial adapters empirically exercised within their designed capabilities |
 | M6–M8 | Controller/agent, deployment verification, dashboard/audit trail | Planned |
 
 ### Verified results at a glance
@@ -46,11 +50,14 @@ M5  Test the candidate control in a sandbox.                 NEXT
 | M3 fact requests | 51 requests, 47 unique facts |
 | M4 deterministic rules | 19 across all ten PoC controls |
 | M4 automated tests | 65 passed |
-| Full M1–M4 suite | 187 passed, 0 failed |
+| M5 initial adapters | 3: one full, one conditional, one audit/plan-only |
+| M5 real sandbox experiments | 3: `7.1.1` validated; `5.1.20` warning; `4.2.3` intentionally `not_tested` |
+| M5 automated tests | 122 passed |
+| Full M1–M5 suite | 309 passed, 0 failed |
 
-Automated tests establish software behavior. The recorded Ubuntu experiment now has
-normal and elevated M4 reports, but this remains evidence from one target rather than
-universal Ubuntu validation.
+Automated tests establish software behavior. The recorded experiments now include
+normal and elevated M4 reports from one target and three initial M5 sandbox reports;
+none is universal Ubuntu validation.
 
 ## Main architecture
 
@@ -78,7 +85,10 @@ Licensed CIS benchmark
           Structured, provisional compatibility report
                             │
                             ▼
-                 M5 sandbox validation — next
+                 M5 sandbox validation
+                            │
+                            ▼
+          pre-audit → candidate → post-audit → health/rollback
 ```
 
 ## Milestone 1 — CIS benchmark ingestion
@@ -365,6 +375,167 @@ List the auditable rule catalog without loading a profile:
 python -m src.compatibility_engine.cli --list-rules
 ```
 
+## Milestone 5 — sandbox validation
+
+> **Question:** What actually happens when a hand-authored candidate control is applied
+> inside a representative Ubuntu sandbox?
+
+M5 is an empirical validation layer, not another M4 decision state and not a CIS
+compliance scanner.
+
+```text
+M2 structured metadata     Explicit M3/M4 evidence       Local sandbox identity
+          └───────────────────────┬──────────────────────────────┘
+                                  ▼
+             sandbox precheck + operator acknowledgements
+                                  ▼
+ pre-audit → fixed adapter action → post-audit → health checks
+                                  │
+                                  └── adapter-specific rollback on failure
+                                  ▼
+                validated | warning | failed | not_tested
+```
+
+| M4 answers | M5 answers |
+|---|---|
+| Whether current evidence triggers a defined compatibility concern | What the candidate actually did in this sandbox run |
+| Uses `no_known_conflict`, `warning`, `review_required`, `insufficient_evidence` | Uses `validated`, `warning`, `failed`, `not_tested` |
+| Never mutates a host | May mutate only through an explicitly supported adapter |
+| A result is input evidence, never deployment permission | Every mutation still requires sandbox acknowledgement and administrator approval |
+
+Neither layer emits CIS PASS/FAIL. `no_known_conflict` never becomes an implicit M5
+authorization.
+
+The M3/M4 inputs retained in an M5 report are target-lineage context only. They are not
+reused as sandbox state: M5 collects the local sandbox identity and pre/post evidence
+freshly and stores them in separate report fields.
+
+### Implemented initial adapters
+
+| Control | Capability | Current behavior |
+|---|---|---|
+| `7.1.1` — `/etc/passwd` permissions | **Full initial experiment; empirically validated** | Fresh fixed-path audit; private exclusive backup; UID/GID `0`; current mode masked by `0644` without widening access; post-audit; non-secret account-database checks; metadata rollback on failure |
+| `5.1.20` — SSH `PermitRootLogin` | **Conditional, execute-gated; empirically exercised** | Strict Include/Match/service prerequisites; one SENTRA-owned drop-in; validation before the only allowed reload; real execution reached the intended technical state but returned `warning` because automated evidence cannot prove future remote access |
+| `4.2.3` — UFW service | **Audit and plan only; empirically exercised** | Records mask/enabled/active/status, session context, TCP/22 evidence, and alternate-port uncertainty; automatic firewall mutation is deliberately not implemented |
+
+All other controls produce `not_tested` because no hand-authored M5 adapter exists.
+M5 never turns CIS Audit or Remediation prose into a command.
+
+### Mutation gates and safety boundary
+
+Actual mutation requires all applicable gates:
+
+- `--execute` and `--sandbox-ack`;
+- Ubuntu `24.04` identity on a supported recorded architecture;
+- effective UID `0`;
+- explicit `--administrator-approval`;
+- an explicit M4 report for the selected control;
+- `--compatibility-ack` for M4 `warning`, `review_required`, or
+  `insufficient_evidence`; and
+- a non-empty research reason when overriding `insufficient_evidence`.
+
+Control `5.1.20` execution additionally requires all three SSH-specific attestations:
+`--ssh-recovery-access-ack`, `--ssh-non-root-admin-sudo-access-verified`, and
+`--ssh-lockout-risk-ack`. These execute-only gates are not required for a plan, control
+`7.1.1`, or the audit/plan-only UFW adapter.
+
+The acknowledgement is recorded as `sandbox_operator_acknowledged: true`. M5 does not
+claim that it technically verified a disposable VM. It records that an external VM
+snapshot is expected, but it neither creates nor restores snapshots.
+
+The command boundary accepts named actions rather than arbitrary argv. Every subprocess
+uses an absolute allowlisted executable, fixed arguments, a fixed environment, a
+timeout, and `shell=False`. The only initial mutating subprocess is a control-bound
+`systemctl reload ssh.service`; there is no SSH restart/start and no UFW mutation.
+`/etc/passwd` changes use no-follow, inode-checked Python file operations against the
+adapter's exact path. There is no generic command-from-YAML, package installation,
+reboot, shutdown, remote connection, controller/agent transport, or central database.
+
+### M5 report and audit trail
+
+Each YAML report retains:
+
+- sandbox OS/version, hostname, kernel, architecture, effective UID, and operator gates;
+- M2 metadata source plus optional M3 source and exact M4 result/provisional lineage;
+- pre- and post-audit evidence with `collected`, `unavailable`, `unsupported`, or
+  `error` states;
+- planned/attempted actions, backups, health checks, rollback outcome, errors, and
+  warnings; and
+- ordered events for precheck, audit, remediation, health, rollback, and final result.
+
+Reports contain normalized evidence, not `/etc/passwd` contents, password hashes, SSH
+keys, or raw configuration bodies. Generated reports live under `data/sandbox/` and
+are ignored by Git.
+
+### M5 validation status
+
+The implementation is unit/acceptance tested with temporary files and injected fake
+system boundaries: 122 M5 tests pass, and the complete M1–M5 suite is 309 passed with no
+failures.
+
+### Real sandbox evidence
+
+The initial M5 PoC validation scope is complete: one full file-metadata execution, one
+conditional SSH execution, and one deliberately non-mutating firewall audit/plan were
+run in a dedicated Ubuntu 24.04 sandbox.
+
+#### Control `7.1.1` — `/etc/passwd` permissions
+
+The sandbox `/etc/passwd` mode was deliberately set to `0664`. M5 detected that state
+and its controlled remediation restored `0644 root:root`. The run exercised backup,
+remediation, post-audit verification, and all required health checks; those health
+checks passed and the final automated result was `validated`.
+
+Local evidence: `data/sandbox/7_1_1-repro-20260920T153703Z.yaml`. This generated report
+is Git-ignored and must not be committed.
+
+#### Control `5.1.20` — SSH `PermitRootLogin`
+
+The M5 pre-audit collected an effective `PermitRootLogin without-password`, an active
+and reload-capable `ssh.service`, valid `sshd` syntax, supported Include ordering, and
+no detected `Match` directives. The controlled execution created the dedicated
+`/etc/ssh/sshd_config.d/00-sentra-5-1-20.conf` drop-in, verified an effective
+`PermitRootLogin no`, revalidated syntax, successfully reloaded the service, and found
+`ssh.service` still active. Remediation recorded `attempted=true`, `changed=true`, and
+`succeeded=true`; rollback was not required.
+
+The automated M5 result was `warning`, **not `validated`**, because internal service,
+configuration, and current-session evidence cannot prove future remote-access
+continuity. Separate live inspection confirmed the new drop-in was `root:root` mode
+`0644`. Separately from SENTRA's automated result, a brand-new post-change SSH session
+was successfully established and non-root administrator plus `sudo` access were
+independently confirmed. Those external checks do not change the automated `warning`.
+
+- Local evidence: `data/sandbox/5_1_20-validation-20260922T153043Z.yaml`
+- SHA-256: `b23b751aff3cd8ca94dc11d56f013e95a79ed3a935c456dd86f9b71dbe431996`
+
+#### Control `4.2.3` — UFW service
+
+The adapter remains `audit_plan_only`. The sandbox had the UFW package installed; the
+M5 report independently recorded `ufw.service` as enabled and active, while
+`ufw status verbose` reported `inactive`. It found no TCP/22 UFW rule. Alternate
+SSH-port context was unavailable, and remote-session context was unsupported in this
+run because marker absence cannot be proven after privilege escalation.
+
+Remediation recorded `supported=false`, `attempted=false`, and `changed=false`. SENTRA
+explicitly planned a remote-access safety review and deferred firewall mutation. The
+final result was `not_tested`: this is the intended safety boundary, not a failed
+experiment.
+
+- Local evidence: `data/sandbox/4_2_3-plan-20260922T154200Z.yaml`
+- SHA-256: `7e0a3d40adc725c038c7be09fc1434438fa58d617bf36b51a66b5d8d19668f67`
+
+These are sandbox experiments, not production deployment, full CIS automation, or CIS
+compliance verdicts. M2 metadata remains `needs_review`, and M4 results remain
+provisional. The retained target profile is Ubuntu 24.04 `aarch64`, while the M5
+sandbox is Ubuntu 24.04 `x86_64`; that difference limits broader representativeness.
+External VM snapshot and console recovery remain operator responsibilities. Generated
+M5 reports are local evidence, are Git-ignored, and must not be committed. SENTRA does
+not provide automated proof of future SSH access continuity; the successful new session
+and administrator/`sudo` checks above are explicitly separate external verification.
+Broader control coverage and an automated controller-agent/sandbox-manager lifecycle
+remain future work.
+
 ## Current research boundary
 
 ### Implemented
@@ -372,15 +543,18 @@ python -m src.compatibility_engine.cli --list-rules
 - one-version CIS Ubuntu benchmark ingestion;
 - ten-control PoC enrichment with explicit review status;
 - local read-only Ubuntu 24.04 profiling;
-- deterministic dependency and compatibility analysis; and
-- structured, evidence-traceable YAML reports.
+- deterministic dependency and compatibility analysis;
+- the local M5 sandbox framework and three initial adapters; and
+- structured, evidence-traceable M4 and M5 YAML reports, including the three initial
+  real-sandbox M5 experiment reports retained as local generated artifacts.
 
 ### Not implemented
 
-- M5 sandbox execution or validation;
-- CIS Audit or Remediation execution;
+- broader M5 control coverage and automated sandbox lifecycle management;
+- arbitrary CIS Audit or Remediation execution;
 - automatic deployment or post-deployment verification;
-- controller, target agent, centralized database, dashboard, or approval workflow.
+- controller, target agent, sandbox manager, centralized database, dashboard, or
+  approval workflow.
 
 ### Limitations
 
@@ -394,6 +568,14 @@ python -m src.compatibility_engine.cli --list-rules
   than being guessed.
 - M4 real-profile validation currently covers one Ubuntu target under normal and
   elevated execution contexts.
+- M5 currently covers three controls: `7.1.1` completed with `validated`, conditional
+  SSH control `5.1.20` completed with `warning`, and audit/plan-only UFW control `4.2.3`
+  completed with the intentional result `not_tested`.
+- The completed `7.1.1` run used an `x86_64` sandbox while its recorded target lineage
+  was `aarch64`; that fixed metadata experiment is not architecture-sensitive, but it
+  does not establish architecture-wide equivalence.
+- VM identity and operator acknowledgement do not prove disposability; snapshot
+  handling remains an external operator responsibility.
 
 ## Data storage
 
@@ -403,6 +585,7 @@ python -m src.compatibility_engine.cli --list-rules
 | M2 | `data/poc/poc_controls.yaml`, `data/poc/enriched/*.yaml` | Tracked |
 | M3 | `data/profiles/*.yaml` | Generated profiles ignored |
 | M4 | `data/compatibility/*.yaml` | Generated reports ignored; `.gitkeep` tracked |
+| M5 | `data/sandbox/*.yaml` | Generated sandbox reports ignored; `.gitkeep` tracked |
 
 ## Project structure
 
@@ -411,7 +594,8 @@ data/
 ├── controls/                    M1 CIS-derived records
 ├── poc/                         M2 manifest + enrichment
 ├── profiles/                    M3 generated profiles; Git-ignored
-└── compatibility/              M4 generated reports; Git-ignored
+├── compatibility/              M4 generated reports; Git-ignored
+└── sandbox/                     M5 generated reports; Git-ignored
 
 src/
 ├── pdf_extractor.py             M1 extraction
@@ -419,20 +603,24 @@ src/
 ├── control_parser.py            M1 field parsing
 ├── poc_models.py                M2 validation
 ├── target_profiler/             M3 read-only profiler
-└── compatibility_engine/        M4 analysis package
-    ├── __init__.py
-    ├── models.py
-    ├── loaders.py
-    ├── evidence.py
-    ├── rules.py
-    ├── engine.py
-    ├── report.py
-    └── cli.py
+├── compatibility_engine/        M4 analysis package
+└── sandbox_validator/           M5 sandbox package
+    ├── models.py                strict reports and result states
+    ├── loaders.py               inert M2/M3/M4 inputs
+    ├── command_runner.py        named, fixed subprocess actions
+    ├── precheck.py              identity and authorization gates
+    ├── audit.py                 normalized fresh evidence
+    ├── health.py                narrow post-change checks
+    ├── adapters/                three hand-authored control adapters
+    ├── validator.py             fail-stop orchestration
+    ├── report.py                YAML output
+    └── cli.py                   local plan/execute entry point
 
 tests/
 ├── test_compatibility_engine.py
 ├── test_compatibility_engine_rules.py
-└── test_compatibility_engine_acceptance.py
+├── test_compatibility_engine_acceptance.py
+└── test_sandbox_validator_*.py
 ```
 
 ## Technical usage
@@ -454,15 +642,66 @@ python -m src.target_profiler.cli \
   --output data/profiles/target-profile.yaml
 ```
 
+To reproduce the workflow on a dedicated sandbox, generate the matching profile and
+compatibility report locally inside that VM:
+
+```bash
+.venv/bin/python -m src.target_profiler.cli \
+  --format yaml \
+  --output data/profiles/sandbox-profile.yaml
+
+.venv/bin/python -m src.compatibility_engine.cli \
+  --profile data/profiles/sandbox-profile.yaml \
+  --output data/compatibility/sandbox-compatibility.yaml
+```
+
+List M5 capabilities without inspecting the host:
+
+```bash
+.venv/bin/python -m src.sandbox_validator.cli --list-controls
+```
+
+Run an M5 read-only plan after generating the matching M4 report:
+
+```bash
+.venv/bin/python -m src.sandbox_validator.cli \
+  --control 7.1.1 \
+  --target-profile data/profiles/sandbox-profile.yaml \
+  --compatibility-report data/compatibility/sandbox-compatibility.yaml \
+  --plan
+```
+
+On the dedicated Ubuntu sandbox only, first create an external VM snapshot and review
+the plan. For the current provisional/review-required `7.1.1` path, run:
+
+```bash
+sudo .venv/bin/python -m src.sandbox_validator.cli \
+  --control 7.1.1 \
+  --target-profile data/profiles/sandbox-profile.yaml \
+  --compatibility-report data/compatibility/sandbox-compatibility.yaml \
+  --sandbox-ack \
+  --administrator-approval \
+  --compatibility-ack \
+  --execute \
+  --output data/sandbox/7-1-1-validation.yaml
+```
+
+An existing output is never replaced unless `--overwrite` is also supplied. If M4
+returns `insufficient_evidence`, execution additionally requires
+`--override-insufficient-evidence "<specific research reason>"`. These are local-only
+commands; the CLI has no remote-host option.
+
 The benchmark converter requires the licensed PDF to be supplied locally. The PDF,
-full generated catalog, host profiles, and compatibility reports must not be
-redistributed as normal repository content.
+full generated catalog, host profiles, compatibility reports, and sandbox reports must
+not be redistributed as normal repository content.
 
-## Next — Milestone 5 sandbox validation
+## Next research step
 
-M5 will test candidate controls in an isolated environment and collect pre-change,
-post-change, service-health, and rollback evidence. M4 does not start that work or use
-its absence as permission to deploy.
+The initial M5 PoC validation scope is complete. Future work covers broader hand-authored
+control support and an automated sandbox lifecycle, including controller/agent
+networking, sandbox management, external snapshot integration, multi-target
+orchestration, deployment verification, the final dashboard, and the central Audit
+Unit.
 
 ## Research and licensing note
 

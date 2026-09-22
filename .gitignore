@@ -19,3 +19,7 @@ data/profiles/
 # Milestone 4 compatibility reports are machine-generated local artifacts.
 data/compatibility/*
 !data/compatibility/.gitkeep
+
+# Milestone 5 sandbox validation reports are local, machine-generated artifacts.
+data/sandbox/*
+!data/sandbox/.gitkeep
