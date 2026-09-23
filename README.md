@@ -7,12 +7,14 @@ recommendations into structured records, adds reviewable SENTRA knowledge, profi
 Ubuntu target without changing it, evaluates dependency and compatibility evidence, and
 runs tightly bounded control experiments in an acknowledged Ubuntu sandbox.
 
-**Milestones 1–5 are implemented at PoC scope, and the initial three-control M5
-sandbox validation scope is complete.** SENTRA is not a production hardening platform,
-a CIS compliance scanner, or a claim of complete CIS enforcement. M1–M4 remain
-non-mutating. M5's intended mutation surface is limited to explicit adapters and
-approval gates; its two controlled executions and one deliberately non-mutating
-audit/plan are documented below.
+**Milestones 1–5 are implemented at PoC scope, the initial three-control M5 sandbox
+validation scope is complete, and M6A adds an in-process Controller/Agent protocol
+skeleton.** SENTRA is not a production hardening platform, a CIS compliance scanner,
+or a claim of complete CIS enforcement. M1–M4 remain non-mutating. M5's intended
+mutation surface is limited to explicit adapters and approval gates; its two controlled
+executions and one deliberately non-mutating audit/plan are documented below. M6A adds
+no remediation or arbitrary remote-command capability and has not been tested over a
+real network or against a VM.
 
 ## The research story
 
@@ -26,6 +28,8 @@ M3  What is actually on Ubuntu?
 M4  Do the control requirements and target evidence conflict?
                 ↓
 M5  What happens when the candidate runs in a sandbox?       INITIAL VALIDATION
+                ↓
+M6A How can authenticated Agents submit target evidence?     PROTOCOL SKELETON
 ```
 
 ## Project status
@@ -37,7 +41,8 @@ M5  What happens when the candidate runs in a sandbox?       INITIAL VALIDATION
 | M3 — target profiling | Read-only Ubuntu 24.04 target profile | ✅ Implemented and validated on one real target |
 | M4 — compatibility analysis | Evidence-traceable compatibility report | ✅ Implemented; normal and elevated real-profile reports rerun and reviewed |
 | M5 — sandbox validation | Isolated, evidence-traceable control experiment | ✅ Three initial adapters empirically exercised within their designed capabilities |
-| M6–M8 | Controller/agent, deployment verification, dashboard/audit trail | Planned |
+| M6A — controller/agent skeleton | Identity, enrollment, heartbeat, target-isolated profile jobs, and evidence lineage | ✅ Implemented in-process; real transport and VM integration not yet tested |
+| Later M6–M8 | Real M3/M4 orchestration, TLS transport, deployment/approval, sandbox manager, dashboard/audit trail | Planned |
 
 ### Verified results at a glance
 
@@ -54,6 +59,7 @@ M5  What happens when the candidate runs in a sandbox?       INITIAL VALIDATION
 | M5 real sandbox experiments | 3: `7.1.1` validated; `5.1.20` warning; `4.2.3` intentionally `not_tested` |
 | M5 automated tests | 122 passed |
 | Full M1–M5 suite | 309 passed, 0 failed |
+| M6A boundary | Agent-initiated; `PROFILE_TARGET` is the only operational job type |
 
 Automated tests establish software behavior. The recorded experiments now include
 normal and elevated M4 reports from one target and three initial M5 sandbox reports;
@@ -90,6 +96,24 @@ Licensed CIS benchmark
                             ▼
           pre-audit → candidate → post-audit → health/rollback
 ```
+
+M6A begins the centralization boundary without changing those layers:
+
+```text
+Ubuntu Agent -- outbound enroll / heartbeat / poll / profile --> Controller
+     |                                                        |
+     +-- future reuse of M3 profiler              SQLite repository boundary
+                                                              |
+                                               future M4 orchestration
+```
+
+`target_id` and `agent_id` are opaque Controller-issued identities.
+`installation_id` is generated and persisted locally by the Agent. Observed host
+metadata is non-authoritative, and current Mac/VM addresses, hostnames, and usernames
+are lab details only. The Controller does not SSH into targets, and the protocol has no
+generic command, shell, remediation, or deployment job. See
+[`docs/m6a-architecture.md`](docs/m6a-architecture.md) for the protocol, identity,
+authentication, storage, API, and evidence-lineage boundaries.
 
 ## Milestone 1 — CIS benchmark ingestion
 
@@ -546,15 +570,19 @@ remain future work.
 - deterministic dependency and compatibility analysis;
 - the local M5 sandbox framework and three initial adapters; and
 - structured, evidence-traceable M4 and M5 YAML reports, including the three initial
-  real-sandbox M5 experiment reports retained as local generated artifacts.
+  real-sandbox M5 experiment reports retained as local generated artifacts; and
+- the M6A in-process Controller/Agent protocol skeleton with persistent identities,
+  enrollment, authenticated heartbeat, target-isolated `PROFILE_TARGET` jobs, local
+  SQLite persistence, and profile-evidence lineage.
 
 ### Not implemented
 
 - broader M5 control coverage and automated sandbox lifecycle management;
 - arbitrary CIS Audit or Remediation execution;
 - automatic deployment or post-deployment verification;
-- controller, target agent, sandbox manager, centralized database, dashboard, or
-  approval workflow.
+- real M3 Agent integration or M4 Controller orchestration;
+- real-network TLS transport and certificate lifecycle validation; and
+- deployment/approval workflows, sandbox manager, production database, or dashboard.
 
 ### Limitations
 
@@ -576,6 +604,9 @@ remain future work.
   does not establish architecture-wide equivalence.
 - VM identity and operator acknowledgement do not prove disposability; snapshot
   handling remains an external operator responsibility.
+- M6A is an in-process protocol and persistence skeleton. It has not contacted a VM or
+  validated TLS transport, certificate lifecycle, real M3 collection, M4 orchestration,
+  deployment, or a production administration boundary.
 
 ## Data storage
 
@@ -586,6 +617,7 @@ remain future work.
 | M3 | `data/profiles/*.yaml` | Generated profiles ignored |
 | M4 | `data/compatibility/*.yaml` | Generated reports ignored; `.gitkeep` tracked |
 | M5 | `data/sandbox/*.yaml` | Generated sandbox reports ignored; `.gitkeep` tracked |
+| M6A | `data/controller/*`, `data/agent/*` | Generated databases, credentials, and runtime state ignored; `.gitkeep` files tracked |
 
 ## Project structure
 
@@ -595,7 +627,12 @@ data/
 ├── poc/                         M2 manifest + enrichment
 ├── profiles/                    M3 generated profiles; Git-ignored
 ├── compatibility/              M4 generated reports; Git-ignored
-└── sandbox/                     M5 generated reports; Git-ignored
+├── sandbox/                     M5 generated reports; Git-ignored
+├── controller/                  M6A local database/runtime state; Git-ignored
+└── agent/                       M6A local identity/credential state; Git-ignored
+
+docs/
+└── m6a-architecture.md          M6A trust, protocol, storage, and lineage design
 
 src/
 ├── pdf_extractor.py             M1 extraction
@@ -604,7 +641,7 @@ src/
 ├── poc_models.py                M2 validation
 ├── target_profiler/             M3 read-only profiler
 ├── compatibility_engine/        M4 analysis package
-└── sandbox_validator/           M5 sandbox package
+├── sandbox_validator/           M5 sandbox package
     ├── models.py                strict reports and result states
     ├── loaders.py               inert M2/M3/M4 inputs
     ├── command_runner.py        named, fixed subprocess actions
@@ -615,12 +652,15 @@ src/
     ├── validator.py             fail-stop orchestration
     ├── report.py                YAML output
     └── cli.py                   local plan/execute entry point
+├── controller/                  M6A protocol service + SQLite repository
+└── agent/                       M6A persistent installation identity + client boundary
 
 tests/
 ├── test_compatibility_engine.py
 ├── test_compatibility_engine_rules.py
 ├── test_compatibility_engine_acceptance.py
-└── test_sandbox_validator_*.py
+├── test_sandbox_validator_*.py
+└── test_m6_*.py
 ```
 
 ## Technical usage
@@ -697,11 +737,12 @@ not be redistributed as normal repository content.
 
 ## Next research step
 
-The initial M5 PoC validation scope is complete. Future work covers broader hand-authored
-control support and an automated sandbox lifecycle, including controller/agent
-networking, sandbox management, external snapshot integration, multi-target
-orchestration, deployment verification, the final dashboard, and the central Audit
-Unit.
+The initial M5 PoC validation scope and the M6A in-process protocol skeleton are
+complete. The next M6B step is a TLS-verified real Agent-to-Controller experiment that
+invokes the existing M3 profiler only through the allowlisted `PROFILE_TARGET` path.
+Later work includes M4 Controller orchestration with profile/report lineage,
+deployment and approval, sandbox management and external snapshot integration,
+broader control coverage, the dashboard, and the central Audit Unit.
 
 ## Research and licensing note
 

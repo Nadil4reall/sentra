@@ -1,0 +1,280 @@
+"""Strict protocol and lineage models for the SENTRA M6 controller.
+
+Observed host details are deliberately kept separate from controller-issued
+``target_id`` and ``agent_id`` values.  In particular, neither a hostname nor
+the optional hashed machine-identity evidence is an authoritative SENTRA
+identity.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Annotated
+from uuid import UUID
+
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+
+from src.target_profiler.models import TargetProfile
+
+
+def _reject_blank_string(value: str) -> str:
+    if not value.strip():
+        raise ValueError("value must not be blank")
+    return value
+
+
+def _reject_blank_secret(value: SecretStr) -> SecretStr:
+    if not value.get_secret_value().strip():
+        raise ValueError("credential must not be blank")
+    return value
+
+
+NonEmptyString = Annotated[
+    str,
+    Field(min_length=1),
+    AfterValidator(_reject_blank_string),
+]
+NonEmptySecret = Annotated[SecretStr, AfterValidator(_reject_blank_secret)]
+Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class StrictControllerModel(BaseModel):
+    """Base for protocol models with coercion and undocumented fields disabled."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        hide_input_in_errors=True,
+    )
+
+
+class ObservedTargetMetadata(StrictControllerModel):
+    """Non-authoritative host attributes observed by an agent.
+
+    ``machine_identity_hash`` may be supplied as correlation evidence, but it
+    must never replace the opaque controller-issued target identity.  Raw
+    machine IDs are not part of this protocol.
+    """
+
+    hostname: NonEmptyString
+    os: NonEmptyString
+    os_version: NonEmptyString
+    kernel: NonEmptyString
+    architecture: NonEmptyString
+    machine_identity_hash: Sha256Hex | None = Field(
+        default=None,
+        description=(
+            "Optional non-authoritative SHA-256 evidence; never a target ID"
+        ),
+    )
+
+class JobType(StrEnum):
+    """Closed M6A operational job vocabulary."""
+
+    PROFILE_TARGET = "PROFILE_TARGET"
+
+
+class JobStatus(StrEnum):
+    PENDING = "pending"
+    DISPATCHED = "dispatched"
+    COMPLETED = "completed"
+
+
+class TargetStatus(StrEnum):
+    ENROLLED = "enrolled"
+    ONLINE = "online"
+
+
+class EnrollmentRequest(StrictControllerModel):
+    bootstrap_credential: NonEmptySecret
+    installation_id: UUID
+    agent_version: NonEmptyString
+    observed_metadata: ObservedTargetMetadata
+
+
+class EnrollmentResponse(StrictControllerModel):
+    target_id: UUID
+    agent_id: UUID
+    agent_credential: NonEmptySecret
+    polling_interval_seconds: int = Field(ge=1, le=86_400)
+
+
+class AgentAuth(StrictControllerModel):
+    target_id: UUID
+    agent_id: UUID
+    agent_credential: NonEmptySecret
+
+
+class AdminAuth(StrictControllerModel):
+    admin_credential: NonEmptySecret
+
+
+class HeartbeatRequest(StrictControllerModel):
+    auth: AgentAuth
+    sent_at: AwareDatetime
+    agent_version: NonEmptyString
+    observed_metadata: ObservedTargetMetadata
+
+
+class HeartbeatResponse(StrictControllerModel):
+    accepted: bool
+    last_seen: AwareDatetime
+
+
+class JobCreateRequest(StrictControllerModel):
+    target_id: UUID
+    job_type: JobType
+
+
+class JobRecord(StrictControllerModel):
+    job_id: UUID
+    target_id: UUID
+    job_type: JobType
+    status: JobStatus
+    created_at: AwareDatetime
+    dispatched_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> "JobRecord":
+        if self.status is JobStatus.PENDING:
+            if self.dispatched_at is not None or self.completed_at is not None:
+                raise ValueError("a pending job cannot have dispatch/completion times")
+        elif self.status is JobStatus.DISPATCHED:
+            if self.dispatched_at is None or self.completed_at is not None:
+                raise ValueError(
+                    "a dispatched job requires dispatched_at and no completed_at"
+                )
+        elif self.dispatched_at is None or self.completed_at is None:
+            raise ValueError(
+                "a completed job requires dispatched_at and completed_at"
+            )
+
+        if self.dispatched_at is not None and self.dispatched_at < self.created_at:
+            raise ValueError("dispatched_at cannot precede created_at")
+        if (
+            self.completed_at is not None
+            and self.dispatched_at is not None
+            and self.completed_at < self.dispatched_at
+        ):
+            raise ValueError("completed_at cannot precede dispatched_at")
+        return self
+
+
+class JobPollRequest(StrictControllerModel):
+    auth: AgentAuth
+
+
+class JobPollResponse(StrictControllerModel):
+    jobs: list[JobRecord]
+
+    @field_validator("jobs")
+    @classmethod
+    def reject_duplicate_jobs(cls, jobs: list[JobRecord]) -> list[JobRecord]:
+        job_ids = [job.job_id for job in jobs]
+        if len(job_ids) != len(set(job_ids)):
+            raise ValueError("jobs must have unique job_id values")
+        return jobs
+
+
+class ProfileSubmissionRequest(StrictControllerModel):
+    auth: AgentAuth
+    job_id: UUID
+    profile: TargetProfile
+    profiler_version: NonEmptyString | None = None
+    sentra_version: NonEmptyString | None = None
+
+
+class ProfileRecord(StrictControllerModel):
+    profile_id: UUID
+    target_id: UUID
+    agent_id: UUID
+    job_id: UUID
+    collected_at: AwareDatetime
+    received_at: AwareDatetime
+    profile_sha256: Sha256Hex
+    profiler_version: NonEmptyString | None = None
+    sentra_version: NonEmptyString | None = None
+
+    @model_validator(mode="after")
+    def validate_timeline(self) -> "ProfileRecord":
+        if self.received_at < self.collected_at:
+            raise ValueError("received_at cannot precede collected_at")
+        return self
+
+
+class CompatibilityLineageRecord(StrictControllerModel):
+    compatibility_report_id: UUID
+    target_id: UUID
+    profile_id: UUID
+    benchmark_identity: NonEmptyString
+    benchmark_version: NonEmptyString
+    generated_at: AwareDatetime
+    report_sha256: Sha256Hex
+
+
+class TargetRecord(StrictControllerModel):
+    target_id: UUID
+    agent_id: UUID
+    installation_id: UUID
+    status: TargetStatus
+    created_at: AwareDatetime
+    last_seen: AwareDatetime | None = None
+    agent_version: NonEmptyString
+    observed_metadata: ObservedTargetMetadata
+
+    @model_validator(mode="after")
+    def validate_last_seen(self) -> "TargetRecord":
+        if self.last_seen is not None and self.last_seen < self.created_at:
+            raise ValueError("last_seen cannot precede created_at")
+        if self.status is TargetStatus.ONLINE and self.last_seen is None:
+            raise ValueError("an online target requires last_seen")
+        return self
+
+
+class MetadataChangeRecord(StrictControllerModel):
+    change_id: UUID
+    target_id: UUID
+    agent_id: UUID
+    observed_at: AwareDatetime
+    previous_metadata: ObservedTargetMetadata
+    current_metadata: ObservedTargetMetadata
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "MetadataChangeRecord":
+        if self.previous_metadata == self.current_metadata:
+            raise ValueError("a metadata-change record must contain a change")
+        return self
+
+
+__all__ = [
+    "AdminAuth",
+    "AgentAuth",
+    "CompatibilityLineageRecord",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "HeartbeatRequest",
+    "HeartbeatResponse",
+    "JobCreateRequest",
+    "JobPollRequest",
+    "JobPollResponse",
+    "JobRecord",
+    "JobStatus",
+    "JobType",
+    "MetadataChangeRecord",
+    "ObservedTargetMetadata",
+    "ProfileRecord",
+    "ProfileSubmissionRequest",
+    "StrictControllerModel",
+    "TargetRecord",
+    "TargetStatus",
+]
