@@ -8,13 +8,15 @@ Ubuntu target without changing it, evaluates dependency and compatibility eviden
 runs tightly bounded control experiments in an acknowledged Ubuntu sandbox.
 
 **Milestones 1–5 are implemented at PoC scope, the initial three-control M5 sandbox
-validation scope is complete, and M6A adds an in-process Controller/Agent protocol
-skeleton.** SENTRA is not a production hardening platform, a CIS compliance scanner,
-or a claim of complete CIS enforcement. M1–M4 remain non-mutating. M5's intended
-mutation surface is limited to explicit adapters and approval gates; its two controlled
-executions and one deliberately non-mutating audit/plan are documented below. M6A adds
-no remediation or arbitrary remote-command capability and has not been tested over a
-real network or against a VM.
+validation scope is complete, M6A provides the Controller/Agent protocol and storage
+core, and M6B implements its TLS-only HTTPS transport and one-cycle M3 Agent.** SENTRA
+is not a production hardening platform, a CIS compliance scanner, or a claim of
+complete CIS enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is
+limited to explicit adapters and approval gates; its two controlled executions and one
+deliberately non-mutating audit/plan are documented below. M6B adds no remediation or
+arbitrary remote-command capability. Its implementation is automated-test validated,
+and the scoped Mac-to-Ubuntu Controller/Agent profiling workflow has completed real-lab
+validation. This does not imply production readiness or completion of all M6 work.
 
 ## The research story
 
@@ -29,7 +31,11 @@ M4  Do the control requirements and target evidence conflict?
                 ↓
 M5  What happens when the candidate runs in a sandbox?       INITIAL VALIDATION
                 ↓
-M6A How can authenticated Agents submit target evidence?     PROTOCOL SKELETON
+M6A How are Agent identity, jobs, storage, and lineage bound? PROTOCOL CORE
+                ↓
+M6B Can one TLS-verified Agent run M3 and submit evidence?    SCOPED LAB VALIDATED
+                ↓
+M6C Can the Controller run existing M4 on that evidence?     PLANNED
 ```
 
 ## Project status
@@ -41,8 +47,9 @@ M6A How can authenticated Agents submit target evidence?     PROTOCOL SKELETON
 | M3 — target profiling | Read-only Ubuntu 24.04 target profile | ✅ Implemented and validated on one real target |
 | M4 — compatibility analysis | Evidence-traceable compatibility report | ✅ Implemented; normal and elevated real-profile reports rerun and reviewed |
 | M5 — sandbox validation | Isolated, evidence-traceable control experiment | ✅ Three initial adapters empirically exercised within their designed capabilities |
-| M6A — controller/agent skeleton | Identity, enrollment, heartbeat, target-isolated profile jobs, and evidence lineage | ✅ Implemented in-process; real transport and VM integration not yet tested |
-| Later M6–M8 | Real M3/M4 orchestration, TLS transport, deployment/approval, sandbox manager, dashboard/audit trail | Planned |
+| M6A — controller/agent core | Identity, enrollment, heartbeat, target-isolated profile jobs, persistence, and evidence lineage | ✅ Implemented and committed |
+| M6B — HTTPS + M3 Agent | TLS-only Controller/Agent transport and deterministic local `PROFILE_TARGET` cycle | ✅ Scoped real-lab validation complete; not production-ready |
+| M6C–M8 | Controller-side M4 orchestration, deployment/approval, sandbox manager, dashboard/audit trail | Planned |
 
 ### Verified results at a glance
 
@@ -59,11 +66,16 @@ M6A How can authenticated Agents submit target evidence?     PROTOCOL SKELETON
 | M5 real sandbox experiments | 3: `7.1.1` validated; `5.1.20` warning; `4.2.3` intentionally `not_tested` |
 | M5 automated tests | 122 passed |
 | Full M1–M5 suite | 309 passed, 0 failed |
-| M6A boundary | Agent-initiated; `PROFILE_TARGET` is the only operational job type |
+| M6 boundary | Agent-initiated HTTPS; `PROFILE_TARGET` is the only operational job type |
+| M6B real-lab workflow | Development-CA-verified HTTPS; one enrollment reused; one `PROFILE_TARGET` job/profile completed |
+| M6 automated tests | 89 passed |
+| Full regression suite after M6B | 398 passed, 0 failed; 5 existing warnings |
 
 Automated tests establish software behavior. The recorded experiments now include
-normal and elevated M4 reports from one target and three initial M5 sandbox reports;
-none is universal Ubuntu validation.
+normal and elevated M4 reports from one target, three initial M5 sandbox reports, and
+one operator-observed M6B Mac-to-Ubuntu profiling workflow. Automated results and
+operator observations are separate evidence sources; none is universal Ubuntu or
+production validation.
 
 ## Main architecture
 
@@ -97,14 +109,14 @@ Licensed CIS benchmark
           pre-audit → candidate → post-audit → health/rollback
 ```
 
-M6A begins the centralization boundary without changing those layers:
+M6A and M6B begin the centralization boundary without changing those layers:
 
 ```text
-Ubuntu Agent -- outbound enroll / heartbeat / poll / profile --> Controller
-     |                                                        |
-     +-- future reuse of M3 profiler              SQLite repository boundary
-                                                              |
-                                               future M4 orchestration
+Ubuntu Agent -- outbound CA-verified HTTPS /api/v1 --> Controller
+     |                                              |
+     +-- existing read-only M3 profiler             +-- SQLite repository
+             for PROFILE_TARGET                             |
+                                                 future M4 orchestration
 ```
 
 `target_id` and `agent_id` are opaque Controller-issued identities.
@@ -112,8 +124,9 @@ Ubuntu Agent -- outbound enroll / heartbeat / poll / profile --> Controller
 metadata is non-authoritative, and current Mac/VM addresses, hostnames, and usernames
 are lab details only. The Controller does not SSH into targets, and the protocol has no
 generic command, shell, remediation, or deployment job. See
-[`docs/m6a-architecture.md`](docs/m6a-architecture.md) for the protocol, identity,
-authentication, storage, API, and evidence-lineage boundaries.
+[`docs/m6a-architecture.md`](docs/m6a-architecture.md) for the committed protocol core
+and [`docs/m6b-architecture.md`](docs/m6b-architecture.md) for the HTTPS transport,
+one-cycle Agent, configuration, lab procedure, and remaining limitations.
 
 ## Milestone 1 — CIS benchmark ingestion
 
@@ -573,15 +586,20 @@ remain future work.
   real-sandbox M5 experiment reports retained as local generated artifacts; and
 - the M6A in-process Controller/Agent protocol skeleton with persistent identities,
   enrollment, authenticated heartbeat, target-isolated `PROFILE_TARGET` jobs, local
-  SQLite persistence, and profile-evidence lineage.
+  SQLite persistence, and profile-evidence lineage; and
+- the M6B TLS-only HTTPS listener/client, protected configuration boundaries,
+  deterministic one-cycle Agent, and narrow reuse of the existing read-only M3
+  profiler for strict profile submission, exercised in the controlled Mac-to-Ubuntu
+  lab workflow.
 
 ### Not implemented
 
 - broader M5 control coverage and automated sandbox lifecycle management;
 - arbitrary CIS Audit or Remediation execution;
 - automatic deployment or post-deployment verification;
-- real M3 Agent integration or M4 Controller orchestration;
-- real-network TLS transport and certificate lifecycle validation; and
+- Controller-side M4 orchestration;
+- production certificate lifecycle automation and broader M6 deployment validation;
+  and
 - deployment/approval workflows, sandbox manager, production database, or dashboard.
 
 ### Limitations
@@ -604,9 +622,12 @@ remain future work.
   does not establish architecture-wide equivalence.
 - VM identity and operator acknowledgement do not prove disposability; snapshot
   handling remains an external operator responsibility.
-- M6A is an in-process protocol and persistence skeleton. It has not contacted a VM or
-  validated TLS transport, certificate lifecycle, real M3 collection, M4 orchestration,
-  deployment, or a production administration boundary.
+- M6B real-lab evidence covers one MacBook Controller, one Ubuntu 24.04 LTS `aarch64`
+  Agent, one lab-only development CA, and one `PROFILE_TARGET` workflow. It does not
+  establish production or multi-environment readiness. Production certificate
+  lifecycle, replay protection, rate limiting, credential rotation/revocation,
+  enrollment response-loss recovery, Agent daemon/service operation, M4 orchestration,
+  deployment, and a production administration boundary remain future work.
 
 ## Data storage
 
@@ -617,7 +638,7 @@ remain future work.
 | M3 | `data/profiles/*.yaml` | Generated profiles ignored |
 | M4 | `data/compatibility/*.yaml` | Generated reports ignored; `.gitkeep` tracked |
 | M5 | `data/sandbox/*.yaml` | Generated sandbox reports ignored; `.gitkeep` tracked |
-| M6A | `data/controller/*`, `data/agent/*` | Generated databases, credentials, and runtime state ignored; `.gitkeep` files tracked |
+| M6A/M6B | `data/controller/*`, `data/agent/*` | Generated databases, credentials, and runtime state ignored; `.gitkeep` files tracked |
 
 ## Project structure
 
@@ -628,11 +649,12 @@ data/
 ├── profiles/                    M3 generated profiles; Git-ignored
 ├── compatibility/              M4 generated reports; Git-ignored
 ├── sandbox/                     M5 generated reports; Git-ignored
-├── controller/                  M6A local database/runtime state; Git-ignored
-└── agent/                       M6A local identity/credential state; Git-ignored
+├── controller/                  M6 Controller database/runtime state; Git-ignored
+└── agent/                       M6 Agent identity/credential state; Git-ignored
 
 docs/
-└── m6a-architecture.md          M6A trust, protocol, storage, and lineage design
+├── m6a-architecture.md          M6A trust, protocol, storage, and lineage baseline
+└── m6b-architecture.md          M6B completed lab record, reproduction, and limitations
 
 src/
 ├── pdf_extractor.py             M1 extraction
@@ -652,8 +674,8 @@ src/
     ├── validator.py             fail-stop orchestration
     ├── report.py                YAML output
     └── cli.py                   local plan/execute entry point
-├── controller/                  M6A protocol service + SQLite repository
-└── agent/                       M6A persistent installation identity + client boundary
+├── controller/                  M6 protocol/service/storage + TLS-only HTTPS listener
+└── agent/                       persistent identity + HTTPS client + M3 one-cycle runtime
 
 tests/
 ├── test_compatibility_engine.py
@@ -673,6 +695,21 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m pytest -q
 ```
+
+Inspect the M6B TLS-only Controller and one-cycle Agent entry points:
+
+```bash
+.venv/bin/python -m src.controller --help
+.venv/bin/python -m src.agent --help
+```
+
+The Controller requires externally provisioned certificate/key paths, a database path,
+and bootstrap/administrator credentials from protected files or named environment
+variables. The Agent requires an HTTPS Controller URL, trusted CA path, persistent
+state path, and a bootstrap credential only on first enrollment. There is no insecure
+TLS option. The validated workflow, evidence record, and reproducible Mac Controller
+and Ubuntu Agent procedure are in
+[`docs/m6b-architecture.md`](docs/m6b-architecture.md).
 
 Generate an M3 profile locally on the Ubuntu 24.04 host:
 
@@ -737,12 +774,15 @@ not be redistributed as normal repository content.
 
 ## Next research step
 
-The initial M5 PoC validation scope and the M6A in-process protocol skeleton are
-complete. The next M6B step is a TLS-verified real Agent-to-Controller experiment that
-invokes the existing M3 profiler only through the allowlisted `PROFILE_TARGET` path.
-Later work includes M4 Controller orchestration with profile/report lineage,
-deployment and approval, sandbox management and external snapshot integration,
-broader control coverage, the dashboard, and the central Audit Unit.
+The initial M5 PoC validation scope and M6A protocol/storage core are complete. M6B
+real-lab validation is complete for the scoped TLS-only Controller/Agent profiling
+workflow; broader M6 work remains planned. The exact M6C implementation step is a
+narrow Controller adapter that runs the existing non-mutating M4 engine on a stored
+validated profile and persists
+`target_id → profile_id → compatibility_report_id` with benchmark identity/version,
+generation time, and a Controller-computed report hash. It must preserve M2
+`needs_review` and M4 provisional semantics and add no remediation, deployment, M5
+orchestration, or dashboard.
 
 ## Research and licensing note
 

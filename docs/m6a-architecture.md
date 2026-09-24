@@ -1,5 +1,10 @@
 # SENTRA M6A controller-agent architecture
 
+> M6A is the committed in-process protocol and storage baseline. M6B now implements
+> the separate TLS-only transport and one-cycle M3 Agent described in
+> [`m6b-architecture.md`](m6b-architecture.md); the historical M6A scope below is
+> intentionally retained.
+
 ## Status and scope
 
 Milestones 1–5 are complete at their documented Proof-of-Concept scope. M6A adds the
