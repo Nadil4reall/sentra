@@ -1,4 +1,4 @@
-"""Narrow persistence boundary for the M6A controller.
+"""Narrow persistence boundary for the SENTRA Controller.
 
 The SQLite implementation stores controller-issued identities, credential verifiers,
 jobs, and immutable evidence lineage.  Protocol and service code depend on the
@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,8 +19,11 @@ import stat
 from typing import Iterator, Protocol
 from uuid import UUID
 
+from pydantic import ValidationError
+
+from src.compatibility_engine.models import CompatibilityReport
 from src.controller.models import (
-    CompatibilityLineageRecord,
+    CompatibilityReportRecord,
     JobRecord,
     JobStatus,
     JobType,
@@ -29,6 +33,7 @@ from src.controller.models import (
     TargetRecord,
     TargetStatus,
 )
+from src.target_profiler.models import TargetProfile
 
 
 class StorageConflictError(RuntimeError):
@@ -61,6 +66,23 @@ class StoredJob:
 
     job: JobRecord
     assigned_agent_id: UUID | None
+
+
+@dataclass(frozen=True)
+class StoredProfile:
+    """A profile whose canonical payload and authoritative hash were revalidated."""
+
+    record: ProfileRecord
+    profile: TargetProfile
+    canonical_payload_json: str
+
+
+@dataclass(frozen=True)
+class StoredCompatibilityReport:
+    """A compatibility report revalidated at the SQLite trust boundary."""
+
+    record: CompatibilityReportRecord
+    canonical_payload_json: str
 
 
 class ControllerRepository(Protocol):
@@ -114,9 +136,23 @@ class ControllerRepository(Protocol):
 
     def get_profile(self, profile_id: UUID) -> ProfileRecord | None: ...
 
-    def store_compatibility_lineage(
-        self, record: CompatibilityLineageRecord
-    ) -> CompatibilityLineageRecord: ...
+    def get_stored_profile(self, profile_id: UUID) -> StoredProfile | None: ...
+
+    def store_compatibility_report(
+        self, record: CompatibilityReportRecord, payload_json: str
+    ) -> CompatibilityReportRecord: ...
+
+    def get_compatibility_report(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> CompatibilityReportRecord | None: ...
+
+    def list_compatibility_reports(
+        self, *, target_id: UUID, profile_id: UUID
+    ) -> list[CompatibilityReportRecord]: ...
 
 
 def _canonical_json(model: ObservedTargetMetadata) -> str:
@@ -128,8 +164,71 @@ def _canonical_json(model: ObservedTargetMetadata) -> str:
     )
 
 
+def _canonical_payload_json(model: TargetProfile | CompatibilityReport) -> str:
+    return json.dumps(
+        model.model_dump(mode="json"),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _sha256(payload_json: str) -> str:
+    return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
 def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value is not None else None
+
+
+_COMPATIBILITY_REPORT_COLUMNS = {
+    "compatibility_report_id",
+    "target_id",
+    "profile_id",
+    "benchmark_identity",
+    "benchmark_version",
+    "generated_at",
+    "report_version",
+    "report_sha256",
+    "payload_json",
+}
+_LEGACY_COMPATIBILITY_REPORT_COLUMNS = _COMPATIBILITY_REPORT_COLUMNS - {
+    "report_version",
+    "payload_json",
+}
+_CREATE_COMPATIBILITY_REPORTS_SQL = """
+    CREATE TABLE compatibility_reports (
+        compatibility_report_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        benchmark_identity TEXT NOT NULL CHECK (
+            benchmark_identity =
+                'CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0'
+        ),
+        benchmark_version TEXT NOT NULL CHECK (
+            benchmark_version = 'v1.0.0'
+        ),
+        generated_at TEXT NOT NULL,
+        report_version TEXT NOT NULL CHECK (report_version = '1'),
+        report_sha256 TEXT NOT NULL CHECK (
+            length(report_sha256) = 64
+            AND report_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        payload_json TEXT NOT NULL,
+        UNIQUE (target_id, profile_id, compatibility_report_id),
+        FOREIGN KEY (target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (profile_id) REFERENCES profiles(profile_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id)
+    )
+"""
+
+
+def _normalized_schema_sql(value: str) -> str:
+    """Normalize insignificant SQL whitespace for an exact schema fingerprint."""
+
+    return " ".join(value.strip().rstrip(";").split())
 
 
 class SQLiteControllerRepository:
@@ -238,7 +337,7 @@ class SQLiteControllerRepository:
             connection.close()
 
     def _initialize(self) -> None:
-        with self._connection() as connection:
+        with self._connection() as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS targets (
@@ -320,22 +419,65 @@ class SQLiteControllerRepository:
 
                 CREATE INDEX IF NOT EXISTS profiles_target_received_idx
                     ON profiles(target_id, received_at);
-
-                CREATE TABLE IF NOT EXISTS compatibility_reports (
-                    compatibility_report_id TEXT PRIMARY KEY,
-                    target_id TEXT NOT NULL,
-                    profile_id TEXT NOT NULL,
-                    benchmark_identity TEXT NOT NULL,
-                    benchmark_version TEXT NOT NULL,
-                    generated_at TEXT NOT NULL,
-                    report_sha256 TEXT NOT NULL,
-                    FOREIGN KEY (target_id) REFERENCES targets(target_id),
-                    FOREIGN KEY (profile_id) REFERENCES profiles(profile_id),
-                    FOREIGN KEY (target_id, profile_id)
-                        REFERENCES profiles(target_id, profile_id)
-                );
                 """
             )
+            self._initialize_compatibility_reports(connection)
+
+    @staticmethod
+    def _initialize_compatibility_reports(connection: sqlite3.Connection) -> None:
+        """Create M6C report storage or safely upgrade the empty M6A placeholder.
+
+        The old table recorded lineage metadata only.  Existing rows cannot be
+        upgraded into complete evidence reports without inventing a payload, so
+        startup fails closed if any such row is present.
+        """
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(compatibility_reports)"
+            ).fetchall()
+        }
+        if not columns:
+            connection.execute(_CREATE_COMPATIBILITY_REPORTS_SQL)
+        elif columns == _LEGACY_COMPATIBILITY_REPORT_COLUMNS:
+            existing = connection.execute(
+                "SELECT COUNT(*) FROM compatibility_reports"
+            ).fetchone()[0]
+            if existing:
+                raise ControllerStorageSecurityError(
+                    "legacy compatibility lineage rows cannot be upgraded "
+                    "without inventing report evidence"
+                )
+            connection.execute("DROP TABLE compatibility_reports")
+            connection.execute(_CREATE_COMPATIBILITY_REPORTS_SQL)
+        elif columns != _COMPATIBILITY_REPORT_COLUMNS:
+            raise ControllerStorageSecurityError(
+                "controller compatibility-report schema is not recognized"
+            )
+
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'compatibility_reports'"
+        ).fetchone()
+        if (
+            schema_row is None
+            or not isinstance(schema_row["sql"], str)
+            or _normalized_schema_sql(schema_row["sql"])
+            != _normalized_schema_sql(_CREATE_COMPATIBILITY_REPORTS_SQL)
+        ):
+            raise ControllerStorageSecurityError(
+                "controller compatibility-report schema constraints are not recognized"
+            )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS compatibility_reports_profile_generated_idx
+            ON compatibility_reports(
+                target_id, profile_id, generated_at, compatibility_report_id
+            )
+            """
+        )
 
     def enroll(
         self,
@@ -684,6 +826,7 @@ class SQLiteControllerRepository:
                 raise StorageConflictError(
                     "profile receipt time precedes job dispatch"
                 )
+            self._validate_profile_payload(record, payload_json)
             try:
                 connection.execute(
                     """
@@ -722,13 +865,8 @@ class SQLiteControllerRepository:
             )
         return record
 
-    def get_profile(self, profile_id: UUID) -> ProfileRecord | None:
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM profiles WHERE profile_id = ?", (str(profile_id),)
-            ).fetchone()
-        if row is None:
-            return None
+    @staticmethod
+    def _profile_record_from_row(row: sqlite3.Row) -> ProfileRecord:
         return ProfileRecord(
             profile_id=UUID(row["profile_id"]),
             target_id=UUID(row["target_id"]),
@@ -741,28 +879,173 @@ class SQLiteControllerRepository:
             sentra_version=row["sentra_version"],
         )
 
-    def store_compatibility_lineage(
-        self, record: CompatibilityLineageRecord
-    ) -> CompatibilityLineageRecord:
+    @staticmethod
+    def _validate_profile_payload(
+        record: ProfileRecord, payload_json: str
+    ) -> StoredProfile:
+        try:
+            if not isinstance(payload_json, str):
+                raise TypeError("profile payload must be text")
+            profile = TargetProfile.model_validate_json(payload_json)
+            canonical_payload = _canonical_payload_json(profile)
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored profile payload is not valid TargetProfile evidence"
+            ) from error
+        if payload_json != canonical_payload:
+            raise StorageConflictError("stored profile payload is not canonical")
+        if _sha256(canonical_payload) != record.profile_sha256:
+            raise StorageConflictError(
+                "stored profile payload does not match its authoritative hash"
+            )
+        if profile.collected_at != record.collected_at:
+            raise StorageConflictError(
+                "stored profile payload does not match profile metadata"
+            )
+        return StoredProfile(
+            record=record,
+            profile=profile,
+            canonical_payload_json=canonical_payload,
+        )
+
+    @classmethod
+    def _stored_profile_from_row(cls, row: sqlite3.Row) -> StoredProfile:
+        try:
+            record = cls._profile_record_from_row(row)
+            return cls._validate_profile_payload(record, row["payload_json"])
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored profile metadata is invalid"
+            ) from error
+
+    def get_stored_profile(self, profile_id: UUID) -> StoredProfile | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM profiles WHERE profile_id = ?", (str(profile_id),)
+            ).fetchone()
+        return None if row is None else self._stored_profile_from_row(row)
+
+    def get_profile(self, profile_id: UUID) -> ProfileRecord | None:
+        stored = self.get_stored_profile(profile_id)
+        return None if stored is None else stored.record
+
+    @staticmethod
+    def _validate_compatibility_report_payload(
+        record: CompatibilityReportRecord,
+        payload_json: str,
+    ) -> StoredCompatibilityReport:
+        try:
+            if not isinstance(payload_json, str):
+                raise TypeError("compatibility report payload must be text")
+            report = CompatibilityReport.model_validate_json(payload_json)
+            canonical_payload = _canonical_payload_json(report)
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored compatibility payload is not a valid report"
+            ) from error
+        if payload_json != canonical_payload:
+            raise StorageConflictError(
+                "stored compatibility report payload is not canonical"
+            )
+        if report != record.report:
+            raise StorageConflictError(
+                "stored compatibility report does not match its record"
+            )
+        if _sha256(canonical_payload) != record.report_sha256:
+            raise StorageConflictError(
+                "stored compatibility report does not match its authoritative hash"
+            )
+        return StoredCompatibilityReport(
+            record=record,
+            canonical_payload_json=canonical_payload,
+        )
+
+    @classmethod
+    def _stored_compatibility_report_from_row(
+        cls, row: sqlite3.Row
+    ) -> StoredCompatibilityReport:
+        try:
+            report = CompatibilityReport.model_validate_json(row["payload_json"])
+            record = CompatibilityReportRecord(
+                compatibility_report_id=UUID(row["compatibility_report_id"]),
+                target_id=UUID(row["target_id"]),
+                profile_id=UUID(row["profile_id"]),
+                benchmark_identity=row["benchmark_identity"],
+                benchmark_version=row["benchmark_version"],
+                generated_at=datetime.fromisoformat(row["generated_at"]),
+                report_version=row["report_version"],
+                report_sha256=row["report_sha256"],
+                report=report,
+            )
+            return cls._validate_compatibility_report_payload(
+                record, row["payload_json"]
+            )
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored compatibility report metadata is invalid"
+            ) from error
+
+    @staticmethod
+    def _validate_compatibility_report_lineage(
+        stored_report: StoredCompatibilityReport,
+        stored_profile: StoredProfile,
+    ) -> None:
+        record = stored_report.record
+        report = record.report
+        if (
+            record.target_id != stored_profile.record.target_id
+            or record.profile_id != stored_profile.record.profile_id
+        ):
+            raise StorageConflictError(
+                "compatibility report target/profile lineage is invalid"
+            )
+        if (
+            report.profile_collected_at != stored_profile.profile.collected_at
+            or report.target != stored_profile.profile.target
+            or report.profile_source
+            != f"controller-stored-profile:{record.profile_id}"
+        ):
+            raise StorageConflictError(
+                "compatibility report does not describe its source profile"
+            )
+        if record.generated_at < stored_profile.record.received_at:
+            raise StorageConflictError(
+                "compatibility report predates its stored source profile"
+            )
+
+    def store_compatibility_report(
+        self,
+        record: CompatibilityReportRecord,
+        payload_json: str,
+    ) -> CompatibilityReportRecord:
+        validated_report = self._validate_compatibility_report_payload(
+            record, payload_json
+        )
         with self._connection() as connection, connection:
-            profile = connection.execute(
-                "SELECT target_id FROM profiles WHERE profile_id = ?",
+            connection.execute("BEGIN IMMEDIATE")
+            profile_row = connection.execute(
+                "SELECT * FROM profiles WHERE profile_id = ?",
                 (str(record.profile_id),),
             ).fetchone()
-            if profile is None:
+            if profile_row is None:
                 raise StorageNotFoundError("profile does not exist")
-            if profile["target_id"] != str(record.target_id):
-                raise StorageConflictError(
-                    "compatibility lineage target does not match profile"
-                )
+            stored_profile = self._stored_profile_from_row(profile_row)
+            self._validate_compatibility_report_lineage(
+                validated_report,
+                stored_profile,
+            )
             try:
                 connection.execute(
                     """
                     INSERT INTO compatibility_reports (
                         compatibility_report_id, target_id, profile_id,
                         benchmark_identity, benchmark_version, generated_at,
-                        report_sha256
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        report_version, report_sha256, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(record.compatibility_report_id),
@@ -771,11 +1054,79 @@ class SQLiteControllerRepository:
                         record.benchmark_identity,
                         record.benchmark_version,
                         record.generated_at.isoformat(),
+                        record.report_version,
                         record.report_sha256,
+                        validated_report.canonical_payload_json,
                     ),
                 )
             except sqlite3.IntegrityError as error:
                 raise StorageConflictError(
-                    "compatibility lineage ID conflicts"
+                    "compatibility report ID or lineage conflicts"
                 ) from error
         return record
+
+    def get_compatibility_report(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> CompatibilityReportRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM compatibility_reports
+                WHERE target_id = ? AND profile_id = ?
+                  AND compatibility_report_id = ?
+                """,
+                (str(target_id), str(profile_id), str(compatibility_report_id)),
+            ).fetchone()
+            profile_row = connection.execute(
+                "SELECT * FROM profiles WHERE target_id = ? AND profile_id = ?",
+                (str(target_id), str(profile_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        if profile_row is None:
+            raise StorageConflictError(
+                "compatibility report source profile does not exist"
+            )
+        stored_report = self._stored_compatibility_report_from_row(row)
+        self._validate_compatibility_report_lineage(
+            stored_report,
+            self._stored_profile_from_row(profile_row),
+        )
+        return stored_report.record
+
+    def list_compatibility_reports(
+        self, *, target_id: UUID, profile_id: UUID
+    ) -> list[CompatibilityReportRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM compatibility_reports
+                WHERE target_id = ? AND profile_id = ?
+                ORDER BY generated_at, compatibility_report_id
+                """,
+                (str(target_id), str(profile_id)),
+            ).fetchall()
+            profile_row = connection.execute(
+                "SELECT * FROM profiles WHERE target_id = ? AND profile_id = ?",
+                (str(target_id), str(profile_id)),
+            ).fetchone()
+        if not rows:
+            return []
+        if profile_row is None:
+            raise StorageConflictError(
+                "compatibility report source profile does not exist"
+            )
+        stored_profile = self._stored_profile_from_row(profile_row)
+        records: list[CompatibilityReportRecord] = []
+        for row in rows:
+            stored_report = self._stored_compatibility_report_from_row(row)
+            self._validate_compatibility_report_lineage(
+                stored_report,
+                stored_profile,
+            )
+            records.append(stored_report.record)
+        return records

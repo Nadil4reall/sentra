@@ -9,7 +9,7 @@ identity.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from src.compatibility_engine.models import CompatibilityReport
 from src.target_profiler.models import TargetProfile
 
 
@@ -212,14 +213,39 @@ class ProfileRecord(StrictControllerModel):
         return self
 
 
-class CompatibilityLineageRecord(StrictControllerModel):
+class CompatibilityAnalysisRequest(StrictControllerModel):
+    """Administrator request to analyze one Controller-stored profile."""
+
+    target_id: UUID
+    profile_id: UUID
+
+
+class CompatibilityReportRecord(StrictControllerModel):
+    """Immutable M6C report payload and its Controller-owned lineage."""
+
     compatibility_report_id: UUID
     target_id: UUID
     profile_id: UUID
-    benchmark_identity: NonEmptyString
-    benchmark_version: NonEmptyString
+    benchmark_identity: Literal[
+        "CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0"
+    ]
+    benchmark_version: Literal["v1.0.0"]
     generated_at: AwareDatetime
+    report_version: Literal["1"]
     report_sha256: Sha256Hex
+    report: CompatibilityReport
+
+    @model_validator(mode="after")
+    def validate_report_metadata(self) -> "CompatibilityReportRecord":
+        if self.generated_at != self.report.generated_at:
+            raise ValueError(
+                "generated_at must match the validated compatibility report"
+            )
+        if self.report_version != self.report.report_version:
+            raise ValueError(
+                "report_version must match the validated compatibility report"
+            )
+        return self
 
 
 class TargetRecord(StrictControllerModel):
@@ -259,7 +285,8 @@ class MetadataChangeRecord(StrictControllerModel):
 __all__ = [
     "AdminAuth",
     "AgentAuth",
-    "CompatibilityLineageRecord",
+    "CompatibilityAnalysisRequest",
+    "CompatibilityReportRecord",
     "EnrollmentRequest",
     "EnrollmentResponse",
     "HeartbeatRequest",

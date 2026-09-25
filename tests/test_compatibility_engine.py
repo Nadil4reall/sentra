@@ -11,7 +11,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from src.compatibility_engine import cli
+from src.compatibility_engine import build_compatibility_inputs, cli
 from src.compatibility_engine.engine import evaluate_compatibility
 from src.compatibility_engine.evidence import resolve_evidence
 from src.compatibility_engine.loaders import load_compatibility_inputs
@@ -204,6 +204,53 @@ def test_loader_reads_all_m2_enrichments_and_matches_m3_relationships(
         "5.1.19",
         "5.1.20",
     ]
+
+
+def test_in_memory_builder_validates_profile_without_a_profile_file(
+    complete_profile: TargetProfile,
+) -> None:
+    inputs = build_compatibility_inputs(
+        complete_profile,
+        profile_source="controller-profile:00000000-0000-0000-0000-000000000001",
+        manifest_path=MANIFEST_PATH,
+    )
+
+    assert inputs.profile_path is None
+    assert inputs.profile is complete_profile
+    assert inputs.profile_source.startswith("controller-profile:")
+    assert inputs.manifest.poc.total_controls == 10
+    assert len(inputs.enrichments) == 10
+
+    report = evaluate_compatibility(inputs, generated_at=FIXED_GENERATED_AT)
+    assert report.profile_source == inputs.profile_source
+    assert report.overall_summary.controls_evaluated == 10
+
+
+def test_in_memory_builder_reuses_exact_fact_relationship_validation(
+    complete_profile: TargetProfile,
+) -> None:
+    incomplete = complete_profile.model_copy(deep=True)
+    incomplete.facts.pop("container_applications_in_use")
+    incomplete.collection_summary = build_collection_summary(incomplete.facts)
+    incomplete = TargetProfile.model_validate(incomplete.model_dump())
+
+    with pytest.raises(ValueError, match="Profile facts do not match"):
+        build_compatibility_inputs(
+            incomplete,
+            profile_source="controller-profile:missing-fact",
+            manifest_path=MANIFEST_PATH,
+        )
+
+
+def test_in_memory_builder_rejects_blank_profile_source(
+    complete_profile: TargetProfile,
+) -> None:
+    with pytest.raises(ValueError, match="profile_source must not be blank"):
+        build_compatibility_inputs(
+            complete_profile,
+            profile_source="   ",
+            manifest_path=MANIFEST_PATH,
+        )
 
 
 def test_loader_does_not_require_cis_source_control_files(

@@ -386,11 +386,11 @@ cycle must reuse the same enrollment and must not create another target.
 - M6B authenticates the submitting Agent and preserves lineage; it does not attest the
   underlying host or prove evidence freshness cryptographically.
 
-## Exact M6C boundary
+## M6C boundary recorded at the M6B freeze
 
-M6C should add a narrow Controller-side adapter that consumes the stored, validated
-`TargetProfile`, invokes the existing non-mutating `src/compatibility_engine`, and
-persists immutable:
+At the M6B freeze, M6C was defined as a narrow Controller-side adapter that consumes
+the stored, validated `TargetProfile`, invokes the existing non-mutating
+`src/compatibility_engine`, and persists immutable:
 
 ```text
 target_id -> profile_id -> compatibility_report_id
@@ -400,3 +400,7 @@ The record must retain the CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0 identity 
 version, generation time, and Controller-computed report SHA-256 while preserving M2
 `needs_review` and M4 provisional semantics. M6C must add no Agent command,
 remediation, deployment, M5 orchestration, or dashboard.
+
+That bounded adapter and its separately scoped stored-profile lab validation are now
+complete. See [`m6c-architecture.md`](m6c-architecture.md) for the M6C design, evidence
+record, and limitations. Later M6 deployment work remains a separate future step.

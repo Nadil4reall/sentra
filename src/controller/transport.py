@@ -32,6 +32,7 @@ from pydantic import (
 from src.controller.api import API_PREFIX, ControllerAPI
 from src.controller.models import (
     AdminAuth,
+    CompatibilityAnalysisRequest,
     EnrollmentRequest,
     EnrollmentResponse,
     HeartbeatRequest,
@@ -55,6 +56,14 @@ _AGENT_ROUTE = re.compile(
 )
 _ADMIN_JOB_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/jobs$"
+)
+_ADMIN_COMPATIBILITY_COLLECTION_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports$"
+)
+_ADMIN_COMPATIBILITY_ITEM_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)$"
 )
 _JSON_CONTENT_TYPE = "application/json"
 
@@ -202,6 +211,52 @@ class ControllerHTTPSApplication:
                 auth = self._admin_auth(normalized_headers)
                 targets = self._api.list_targets(auth)
                 return _json_response(HTTPStatus.OK, _list_payload(targets))
+
+            compatibility_item_match = (
+                _ADMIN_COMPATIBILITY_ITEM_ROUTE.fullmatch(path)
+            )
+            if compatibility_item_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                target_id = UUID(compatibility_item_match.group(1))
+                profile_id = UUID(compatibility_item_match.group(2))
+                report_id = UUID(compatibility_item_match.group(3))
+                auth = self._admin_auth(normalized_headers)
+                response = self._api.get_compatibility_report(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    auth,
+                )
+                return _json_response(HTTPStatus.OK, _model_payload(response))
+
+            compatibility_collection_match = (
+                _ADMIN_COMPATIBILITY_COLLECTION_ROUTE.fullmatch(path)
+            )
+            if compatibility_collection_match is not None:
+                target_id = UUID(compatibility_collection_match.group(1))
+                profile_id = UUID(compatibility_collection_match.group(2))
+                auth = self._admin_auth(normalized_headers)
+                if method == "POST":
+                    request = CompatibilityAnalysisRequest.model_validate_json(body)
+                    response = self._api.run_compatibility_analysis(
+                        target_id,
+                        profile_id,
+                        auth,
+                        request,
+                    )
+                    return _json_response(
+                        HTTPStatus.CREATED,
+                        _model_payload(response),
+                    )
+                if method == "GET":
+                    reports = self._api.list_compatibility_reports(
+                        target_id,
+                        profile_id,
+                        auth,
+                    )
+                    return _json_response(HTTPStatus.OK, _list_payload(reports))
+                return self._method_not_allowed()
 
             admin_job_match = _ADMIN_JOB_ROUTE.fullmatch(path)
             if admin_job_match is not None:

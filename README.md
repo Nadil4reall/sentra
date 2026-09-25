@@ -9,14 +9,16 @@ runs tightly bounded control experiments in an acknowledged Ubuntu sandbox.
 
 **Milestones 1–5 are implemented at PoC scope, the initial three-control M5 sandbox
 validation scope is complete, M6A provides the Controller/Agent protocol and storage
-core, and M6B implements its TLS-only HTTPS transport and one-cycle M3 Agent.** SENTRA
-is not a production hardening platform, a CIS compliance scanner, or a claim of
-complete CIS enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is
-limited to explicit adapters and approval gates; its two controlled executions and one
-deliberately non-mutating audit/plan are documented below. M6B adds no remediation or
-arbitrary remote-command capability. Its implementation is automated-test validated,
-and the scoped Mac-to-Ubuntu Controller/Agent profiling workflow has completed real-lab
-validation. This does not imply production readiness or completion of all M6 work.
+core, M6B implements its TLS-only HTTPS transport and one-cycle M3 Agent, and M6C runs
+the existing M4 engine against validated Controller-stored profiles.** SENTRA is not a
+production hardening platform, a CIS compliance scanner, or a claim of complete CIS
+enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is limited to
+explicit adapters and approval gates; its two controlled executions and one deliberately
+non-mutating audit/plan are documented below. M6B/M6C add no remediation or arbitrary
+remote-command capability. M6B's scoped Mac-to-Ubuntu profiling workflow has completed
+real-lab validation, and M6C has completed a real Controller-stored-profile lab using a
+protected copy of that M6B evidence. This does not imply production readiness or
+completion of all M6 work.
 
 ## The research story
 
@@ -35,7 +37,7 @@ M6A How are Agent identity, jobs, storage, and lineage bound? PROTOCOL CORE
                 ↓
 M6B Can one TLS-verified Agent run M3 and submit evidence?    SCOPED LAB VALIDATED
                 ↓
-M6C Can the Controller run existing M4 on that evidence?     PLANNED
+M6C Can the Controller run existing M4 on that evidence?     STORED-PROFILE LAB VALIDATED
 ```
 
 ## Project status
@@ -49,7 +51,8 @@ M6C Can the Controller run existing M4 on that evidence?     PLANNED
 | M5 — sandbox validation | Isolated, evidence-traceable control experiment | ✅ Three initial adapters empirically exercised within their designed capabilities |
 | M6A — controller/agent core | Identity, enrollment, heartbeat, target-isolated profile jobs, persistence, and evidence lineage | ✅ Implemented and committed |
 | M6B — HTTPS + M3 Agent | TLS-only Controller/Agent transport and deterministic local `PROFILE_TARGET` cycle | ✅ Scoped real-lab validation complete; not production-ready |
-| M6C–M8 | Controller-side M4 orchestration, deployment/approval, sandbox manager, dashboard/audit trail | Planned |
+| M6C — Controller-side M4 | Admin-only analysis of validated stored profiles with canonical report persistence and lineage | ✅ Implemented, automated-test validated, and real stored-profile lab validated; not production-ready |
+| M6D–M8 | Deployment/approval, sandbox manager, dashboard/audit trail | Planned |
 
 ### Verified results at a glance
 
@@ -61,20 +64,24 @@ M6C Can the Controller run existing M4 on that evidence?     PLANNED
 | M2 representative PoC controls | 10 across six security areas |
 | M3 fact requests | 51 requests, 47 unique facts |
 | M4 deterministic rules | 19 across all ten PoC controls |
-| M4 automated tests | 65 passed |
+| M4 automated tests | 68 passed |
 | M5 initial adapters | 3: one full, one conditional, one audit/plan-only |
 | M5 real sandbox experiments | 3: `7.1.1` validated; `5.1.20` warning; `4.2.3` intentionally `not_tested` |
 | M5 automated tests | 122 passed |
 | Full M1–M5 suite | 309 passed, 0 failed |
 | M6 boundary | Agent-initiated HTTPS; `PROFILE_TARGET` is the only operational job type |
 | M6B real-lab workflow | Development-CA-verified HTTPS; one enrollment reused; one `PROFILE_TARGET` job/profile completed |
-| M6 automated tests | 89 passed |
-| Full regression suite after M6B | 398 passed, 0 failed; 5 existing warnings |
+| M6C real-lab workflow | Protected M6B database copy; admin POST/list/item retrieval matched; SQL lineage `MATCH` |
+| Focused M6/M4 validation | 123 passed |
+| M6 automated tests | 100 passed |
+| Full regression suite after M6C | 412 passed, 0 failed; 5 existing warnings |
 
 Automated tests establish software behavior. The recorded experiments now include
 normal and elevated M4 reports from one target, three initial M5 sandbox reports, and
-one operator-observed M6B Mac-to-Ubuntu profiling workflow. Automated results and
-operator observations are separate evidence sources; none is universal Ubuntu or
+one operator-observed M6B Mac-to-Ubuntu profiling workflow. A separate M6C lab reused a
+protected copy of that Controller database and verified central M4 analysis, report
+persistence, retrieval, and SQL lineage for the stored real profile. Automated results
+and operator observations are separate evidence sources; none is universal Ubuntu or
 production validation.
 
 ## Main architecture
@@ -109,14 +116,18 @@ Licensed CIS benchmark
           pre-audit → candidate → post-audit → health/rollback
 ```
 
-M6A and M6B begin the centralization boundary without changing those layers:
+M6A–M6C add a centralization boundary without changing those layers:
 
 ```text
 Ubuntu Agent -- outbound CA-verified HTTPS /api/v1 --> Controller
      |                                              |
      +-- existing read-only M3 profiler             +-- SQLite repository
              for PROFILE_TARGET                             |
-                                                 future M4 orchestration
+                                                validated TargetProfile
+                                                            |
+                                                existing M4 engine (read-only)
+                                                            |
+                                             canonical compatibility report
 ```
 
 `target_id` and `agent_id` are opaque Controller-issued identities.
@@ -126,7 +137,9 @@ are lab details only. The Controller does not SSH into targets, and the protocol
 generic command, shell, remediation, or deployment job. See
 [`docs/m6a-architecture.md`](docs/m6a-architecture.md) for the committed protocol core
 and [`docs/m6b-architecture.md`](docs/m6b-architecture.md) for the HTTPS transport,
-one-cycle Agent, configuration, lab procedure, and remaining limitations.
+one-cycle Agent, configuration, lab procedure, and remaining limitations. The separate
+M6C Controller-side design and stored-profile lab record are in
+[`docs/m6c-architecture.md`](docs/m6c-architecture.md).
 
 ## Milestone 1 — CIS benchmark ingestion
 
@@ -590,14 +603,17 @@ remain future work.
 - the M6B TLS-only HTTPS listener/client, protected configuration boundaries,
   deterministic one-cycle Agent, and narrow reuse of the existing read-only M3
   profiler for strict profile submission, exercised in the controlled Mac-to-Ubuntu
-  lab workflow.
+  lab workflow; and
+- the M6C admin-only Controller adapter that revalidates stored M3 evidence, invokes
+  the existing ten-control M4 engine, and stores canonical compatibility reports with
+  `target_id → profile_id → compatibility_report_id` lineage and Controller-computed
+  hashes, exercised against a protected copy of the real M6B Controller database.
 
 ### Not implemented
 
 - broader M5 control coverage and automated sandbox lifecycle management;
 - arbitrary CIS Audit or Remediation execution;
 - automatic deployment or post-deployment verification;
-- Controller-side M4 orchestration;
 - production certificate lifecycle automation and broader M6 deployment validation;
   and
 - deployment/approval workflows, sandbox manager, production database, or dashboard.
@@ -626,8 +642,13 @@ remain future work.
   Agent, one lab-only development CA, and one `PROFILE_TARGET` workflow. It does not
   establish production or multi-environment readiness. Production certificate
   lifecycle, replay protection, rate limiting, credential rotation/revocation,
-  enrollment response-loss recovery, Agent daemon/service operation, M4 orchestration,
-  deployment, and a production administration boundary remain future work.
+  enrollment response-loss recovery, Agent daemon/service operation, deployment, and a
+  production administration boundary remain future work.
+- M6C is an on-demand, administrator-authenticated PoC over the existing SQLite backend.
+  It covers only the current ten M4 controls and has no scheduler, idempotency framework,
+  production concurrency model, remediation/deployment step, M5 orchestration, or UI.
+  Its real-lab evidence covers one protected database copy, one stored profile, one
+  generated report, and one lab-only certificate chain.
 
 ## Data storage
 
@@ -638,7 +659,7 @@ remain future work.
 | M3 | `data/profiles/*.yaml` | Generated profiles ignored |
 | M4 | `data/compatibility/*.yaml` | Generated reports ignored; `.gitkeep` tracked |
 | M5 | `data/sandbox/*.yaml` | Generated sandbox reports ignored; `.gitkeep` tracked |
-| M6A/M6B | `data/controller/*`, `data/agent/*` | Generated databases, credentials, and runtime state ignored; `.gitkeep` files tracked |
+| M6A–M6C | `data/controller/*`, `data/agent/*` | Generated databases, credentials, runtime state, and stored reports ignored; `.gitkeep` files tracked |
 
 ## Project structure
 
@@ -654,7 +675,8 @@ data/
 
 docs/
 ├── m6a-architecture.md          M6A trust, protocol, storage, and lineage baseline
-└── m6b-architecture.md          M6B completed lab record, reproduction, and limitations
+├── m6b-architecture.md          M6B completed lab record, reproduction, and limitations
+└── m6c-architecture.md          M6C design, stored-profile lab record, and limitations
 
 src/
 ├── pdf_extractor.py             M1 extraction
@@ -674,7 +696,7 @@ src/
     ├── validator.py             fail-stop orchestration
     ├── report.py                YAML output
     └── cli.py                   local plan/execute entry point
-├── controller/                  M6 protocol/service/storage + TLS-only HTTPS listener
+├── controller/                  M6 protocol/service/storage + HTTPS + M4 adapter
 └── agent/                       persistent identity + HTTPS client + M3 one-cycle runtime
 
 tests/
@@ -710,6 +732,10 @@ state path, and a bootstrap credential only on first enrollment. There is no ins
 TLS option. The validated workflow, evidence record, and reproducible Mac Controller
 and Ubuntu Agent procedure are in
 [`docs/m6b-architecture.md`](docs/m6b-architecture.md).
+
+The M6C administrative API, persistence design, semantic boundaries, and completed
+stored-profile lab validation are documented in
+[`docs/m6c-architecture.md`](docs/m6c-architecture.md).
 
 Generate an M3 profile locally on the Ubuntu 24.04 host:
 
@@ -774,15 +800,12 @@ not be redistributed as normal repository content.
 
 ## Next research step
 
-The initial M5 PoC validation scope and M6A protocol/storage core are complete. M6B
-real-lab validation is complete for the scoped TLS-only Controller/Agent profiling
-workflow; broader M6 work remains planned. The exact M6C implementation step is a
-narrow Controller adapter that runs the existing non-mutating M4 engine on a stored
-validated profile and persists
-`target_id → profile_id → compatibility_report_id` with benchmark identity/version,
-generation time, and a Controller-computed report hash. It must preserve M2
-`needs_review` and M4 provisional semantics and add no remediation, deployment, M5
-orchestration, or dashboard.
+The initial M5 PoC validation scope, M6A protocol/storage core, M6B scoped TLS profiling
+workflow, and M6C Controller-side compatibility implementation are complete at their
+stated boundaries, including the scoped M6B and M6C real-lab validations. M6D–M8 remain
+future work; any deployment/approval workflow, sandbox manager, or dashboard must
+remain separate from M6C's non-mutating M4 adapter and must not introduce arbitrary
+remote execution.
 
 ## Research and licensing note
 

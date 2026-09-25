@@ -183,7 +183,7 @@ def _create_and_poll_profile_job(
     return job
 
 
-def test_api_namespace_contains_only_m6a_operations() -> None:
+def test_api_namespace_contains_only_narrow_controller_operations() -> None:
     assert API_PREFIX == "/api/v1"
     assert {(endpoint.method, endpoint.path) for endpoint in ENDPOINTS} == {
         ("POST", "/api/v1/enrollment"),
@@ -192,6 +192,21 @@ def test_api_namespace_contains_only_m6a_operations() -> None:
         ("POST", "/api/v1/agents/{agent_id}/profiles"),
         ("GET", "/api/v1/admin/targets"),
         ("POST", "/api/v1/admin/targets/{target_id}/jobs"),
+        (
+            "POST",
+            "/api/v1/admin/targets/{target_id}/profiles/{profile_id}/"
+            "compatibility-reports",
+        ),
+        (
+            "GET",
+            "/api/v1/admin/targets/{target_id}/profiles/{profile_id}/"
+            "compatibility-reports",
+        ),
+        (
+            "GET",
+            "/api/v1/admin/targets/{target_id}/profiles/{profile_id}/"
+            "compatibility-reports/{compatibility_report_id}",
+        ),
     }
 
 
@@ -223,6 +238,9 @@ def test_controller_settings_redact_plain_strings_and_reject_noninteger_limits()
         "submit_profile",
         "list_targets",
         "create_profile_job",
+        "run_compatibility_analysis",
+        "list_compatibility_reports",
+        "get_compatibility_report",
     }
 
 
@@ -589,42 +607,6 @@ def test_agent_cannot_submit_or_overwrite_another_targets_profile(
     api.submit_profile(second.agent_id, valid)
     with pytest.raises(ControllerConflictError, match="not awaiting"):
         api.submit_profile(second.agent_id, valid)
-
-
-def test_future_compatibility_lineage_is_bound_to_profile_target(
-    tmp_path: Path,
-) -> None:
-    _, service, api = _controller(tmp_path)
-    first = _enroll(api, "target-a")
-    second = _enroll(api, "target-b")
-    job = _create_and_poll_profile_job(api, first)
-    profile = api.submit_profile(
-        first.agent_id,
-        ProfileSubmissionRequest(
-            auth=_auth(first),
-            job_id=job.job_id,
-            profile=_profile(),
-        ),
-    )
-    lineage = service.record_compatibility_lineage(
-        _admin(),
-        target_id=first.target_id,
-        profile_id=profile.profile_id,
-        generated_at=NOW,
-        report_sha256="a" * 64,
-    )
-
-    assert lineage.target_id == first.target_id
-    assert lineage.profile_id == profile.profile_id
-    assert lineage.benchmark_version == "v1.0.0"
-    with pytest.raises(AuthorizationError):
-        service.record_compatibility_lineage(
-            _admin(),
-            target_id=second.target_id,
-            profile_id=profile.profile_id,
-            generated_at=NOW,
-            report_sha256="b" * 64,
-        )
 
 
 def test_clock_rollback_is_rejected_before_job_or_heartbeat_state_mutates(

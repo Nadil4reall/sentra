@@ -1,7 +1,7 @@
-"""Authenticated M6A controller operations.
+"""Authenticated SENTRA Controller operations.
 
-This service is transport-independent.  A later HTTPS adapter can expose the same
-operations without giving the controller a target-side shell or SSH capability.
+The service remains transport-independent and exposes no target-side shell, SSH,
+generic command, or remediation capability.
 """
 
 from __future__ import annotations
@@ -14,10 +14,16 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from src.compatibility_engine.models import CompatibilityReport
+from src.controller.compatibility import (
+    CompatibilityAnalyzer,
+    ExistingM4CompatibilityAnalyzer,
+)
 from src.controller.models import (
     AdminAuth,
     AgentAuth,
-    CompatibilityLineageRecord,
+    CompatibilityAnalysisRequest,
+    CompatibilityReportRecord,
     EnrollmentRequest,
     EnrollmentResponse,
     HeartbeatRequest,
@@ -46,7 +52,9 @@ from src.controller.storage import (
 )
 
 
-CURRENT_BENCHMARK_IDENTITY = "CIS Ubuntu Linux 24.04 LTS Benchmark"
+CURRENT_BENCHMARK_IDENTITY = (
+    "CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0"
+)
 CURRENT_BENCHMARK_VERSION = "v1.0.0"
 
 
@@ -109,6 +117,18 @@ def _canonical_profile_json(request: ProfileSubmissionRequest) -> str:
     )
 
 
+def _canonical_compatibility_report_json(report: CompatibilityReport) -> str:
+    """Canonicalize the validated M4 payload used for storage and hashing."""
+
+    return json.dumps(
+        report.model_dump(mode="json"),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 class ControllerService:
     """Controller-issued identity, job, and evidence-lineage operations."""
 
@@ -120,12 +140,18 @@ class ControllerService:
         clock: Callable[[], datetime] = _utcnow,
         id_factory: Callable[[], UUID] = uuid4,
         credential_factory: Callable[[], SecretStr] = generate_credential,
+        compatibility_analyzer: CompatibilityAnalyzer | None = None,
     ) -> None:
         self._repository = repository
         self._settings = settings
         self._clock = clock
         self._id_factory = id_factory
         self._credential_factory = credential_factory
+        self._compatibility_analyzer = (
+            ExistingM4CompatibilityAnalyzer()
+            if compatibility_analyzer is None
+            else compatibility_analyzer
+        )
         self._bootstrap_hash = hash_credential(settings.bootstrap_credential)
         self._admin_hash = hash_credential(settings.admin_credential)
 
@@ -303,37 +329,137 @@ class ControllerService:
                 "profile lineage conflicts with the dispatched job"
             ) from error
 
-    def record_compatibility_lineage(
+    def run_compatibility_analysis(
+        self,
+        auth: AdminAuth,
+        request: CompatibilityAnalysisRequest,
+    ) -> CompatibilityReportRecord:
+        """Run existing M4 logic for one validated, Controller-stored profile."""
+
+        self._authenticate_admin(auth)
+        try:
+            stored_profile = self._repository.get_stored_profile(request.profile_id)
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored profile evidence could not be validated"
+            ) from error
+        if stored_profile is None:
+            raise ControllerNotFoundError("profile does not exist")
+        if stored_profile.record.target_id != request.target_id:
+            raise AuthorizationError("profile does not belong to the target")
+
+        generated_at = self._now()
+        if generated_at < stored_profile.record.received_at:
+            raise ControllerConflictError(
+                "compatibility analysis time precedes stored profile receipt"
+            )
+        try:
+            analysis = self._compatibility_analyzer.analyze(
+                profile=stored_profile.profile,
+                profile_id=request.profile_id,
+                generated_at=generated_at,
+            )
+            report = CompatibilityReport.model_validate(
+                analysis.report.model_dump(mode="json")
+            )
+        except (OSError, ValueError) as error:
+            raise ControllerConflictError(
+                "stored profile is not eligible for compatibility analysis"
+            ) from error
+
+        expected_source = f"controller-stored-profile:{request.profile_id}"
+        if (
+            analysis.benchmark_identity != CURRENT_BENCHMARK_IDENTITY
+            or analysis.benchmark_version != CURRENT_BENCHMARK_VERSION
+            or report.generated_at != generated_at
+            or report.profile_source != expected_source
+            or report.profile_collected_at != stored_profile.record.collected_at
+            or report.target != stored_profile.profile.target
+        ):
+            raise ControllerConflictError(
+                "compatibility analysis metadata conflicts with profile lineage"
+            )
+
+        payload_json = _canonical_compatibility_report_json(report)
+        report_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        record = CompatibilityReportRecord(
+            compatibility_report_id=self._new_id(),
+            target_id=request.target_id,
+            profile_id=request.profile_id,
+            benchmark_identity=analysis.benchmark_identity,
+            benchmark_version=analysis.benchmark_version,
+            generated_at=generated_at,
+            report_version=report.report_version,
+            report_sha256=report_sha256,
+            report=report,
+        )
+        try:
+            return self._repository.store_compatibility_report(
+                record,
+                payload_json,
+            )
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("profile does not exist") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "compatibility report lineage could not be stored"
+            ) from error
+
+    def list_compatibility_reports(
         self,
         auth: AdminAuth,
         *,
         target_id: UUID,
         profile_id: UUID,
-        generated_at: datetime,
-        report_sha256: str,
-        benchmark_identity: str = CURRENT_BENCHMARK_IDENTITY,
-        benchmark_version: str = CURRENT_BENCHMARK_VERSION,
-    ) -> CompatibilityLineageRecord:
-        """Future M4 integration boundary; it does not run the M4 engine."""
+    ) -> list[CompatibilityReportRecord]:
+        """List immutable M6C reports for one target-owned profile."""
 
         self._authenticate_admin(auth)
-        profile = self._repository.get_profile(profile_id)
+        self._require_profile_target(target_id=target_id, profile_id=profile_id)
+        try:
+            return self._repository.list_compatibility_reports(
+                target_id=target_id,
+                profile_id=profile_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored compatibility report could not be validated"
+            ) from error
+
+    def get_compatibility_report(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> CompatibilityReportRecord:
+        """Retrieve one immutable M6C report through its full lineage."""
+
+        self._authenticate_admin(auth)
+        self._require_profile_target(target_id=target_id, profile_id=profile_id)
+        try:
+            report = self._repository.get_compatibility_report(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored compatibility report could not be validated"
+            ) from error
+        if report is None:
+            raise ControllerNotFoundError("compatibility report does not exist")
+        return report
+
+    def _require_profile_target(self, *, target_id: UUID, profile_id: UUID) -> None:
+        try:
+            profile = self._repository.get_profile(profile_id)
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored profile evidence could not be validated"
+            ) from error
         if profile is None:
             raise ControllerNotFoundError("profile does not exist")
         if profile.target_id != target_id:
             raise AuthorizationError("profile does not belong to the target")
-        record = CompatibilityLineageRecord(
-            compatibility_report_id=self._new_id(),
-            target_id=target_id,
-            profile_id=profile_id,
-            benchmark_identity=benchmark_identity,
-            benchmark_version=benchmark_version,
-            generated_at=generated_at,
-            report_sha256=report_sha256,
-        )
-        try:
-            return self._repository.store_compatibility_lineage(record)
-        except (StorageNotFoundError, StorageConflictError) as error:
-            raise ControllerConflictError(
-                "compatibility lineage could not be stored"
-            ) from error

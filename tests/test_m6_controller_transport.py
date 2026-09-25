@@ -12,12 +12,22 @@ from uuid import UUID, uuid4
 
 from pydantic import SecretStr, ValidationError
 import pytest
+import yaml
 
 from src.controller.api import ControllerAPI
 from src.controller.cli import (
     ControllerCLIConfigurationError,
     build_parser,
     config_from_args,
+)
+from src.controller.models import (
+    AdminAuth,
+    AgentAuth,
+    EnrollmentRequest,
+    JobCreateRequest,
+    JobPollRequest,
+    JobType,
+    ProfileSubmissionRequest,
 )
 from src.controller.service import ControllerService, ControllerSettings
 from src.controller.storage import SQLiteControllerRepository
@@ -28,8 +38,10 @@ from src.controller.transport import (
     TransportResponse,
     build_server_ssl_context,
 )
+from src.target_profiler.models import TargetProfile
 
 
+ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = "transport-bootstrap-secret"
 ADMIN = "transport-admin-secret"
 NOW = datetime(2026, 9, 24, 8, 0, tzinfo=UTC)
@@ -201,6 +213,148 @@ def test_admin_transport_uses_bearer_header_and_exact_existing_job_model(
     assert unauthenticated.status is HTTPStatus.UNAUTHORIZED
     assert created.status is HTTPStatus.CREATED
     assert json.loads(created.body)["job_type"] == "PROFILE_TARGET"
+
+
+def test_m6c_transport_is_admin_only_and_retrieves_controller_report(
+    tmp_path: Path,
+) -> None:
+    repository = SQLiteControllerRepository(tmp_path / "controller.sqlite3")
+    service = ControllerService(
+        repository,
+        ControllerSettings(
+            bootstrap_credential=BOOTSTRAP,
+            admin_credential=ADMIN,
+        ),
+        clock=lambda: NOW,
+    )
+    api = ControllerAPI(service)
+    application = ControllerHTTPSApplication(api)
+    enrollment = api.enroll(
+        EnrollmentRequest(
+            bootstrap_credential=BOOTSTRAP,
+            installation_id=uuid4(),
+            agent_version="0.6c-test",
+            observed_metadata=_metadata(),
+        )
+    )
+    auth = AgentAuth(
+        target_id=enrollment.target_id,
+        agent_id=enrollment.agent_id,
+        agent_credential=enrollment.agent_credential,
+    )
+    job = api.create_profile_job(
+        enrollment.target_id,
+        AdminAuth(admin_credential=ADMIN),
+        JobCreateRequest(
+            target_id=enrollment.target_id,
+            job_type=JobType.PROFILE_TARGET,
+        ),
+    )
+    api.poll_jobs(enrollment.agent_id, JobPollRequest(auth=auth))
+    profile_payload = yaml.safe_load(
+        (ROOT / "data" / "profiles" / "target-profile.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    profile = api.submit_profile(
+        enrollment.agent_id,
+        ProfileSubmissionRequest(
+            auth=auth,
+            job_id=job.job_id,
+            profile=TargetProfile.model_validate(profile_payload),
+        ),
+    )
+    collection_path = (
+        f"/api/v1/admin/targets/{enrollment.target_id}/profiles/"
+        f"{profile.profile_id}/compatibility-reports"
+    )
+    body = json.dumps(
+        {
+            "target_id": str(enrollment.target_id),
+            "profile_id": str(profile.profile_id),
+        }
+    ).encode("utf-8")
+
+    unauthenticated = application.dispatch("POST", collection_path, body)
+    agent_authenticated = application.dispatch(
+        "POST",
+        collection_path,
+        body,
+        {
+            "Authorization": (
+                "Bearer "
+                f"{enrollment.agent_credential.get_secret_value()}"
+            )
+        },
+    )
+    arbitrary_command_attempt = application.dispatch(
+        "POST",
+        collection_path,
+        json.dumps(
+            {
+                "target_id": str(enrollment.target_id),
+                "profile_id": str(profile.profile_id),
+                "command": "id",
+            }
+        ).encode("utf-8"),
+        {"Authorization": f"Bearer {ADMIN}"},
+    )
+    created = application.dispatch(
+        "POST",
+        collection_path,
+        body,
+        {"Authorization": f"Bearer {ADMIN}"},
+    )
+
+    assert unauthenticated.status is HTTPStatus.UNAUTHORIZED
+    assert agent_authenticated.status is HTTPStatus.UNAUTHORIZED
+    assert arbitrary_command_attempt.status is HTTPStatus.BAD_REQUEST
+    assert created.status is HTTPStatus.CREATED
+    created_payload = json.loads(created.body)
+    assert created_payload["target_id"] == str(enrollment.target_id)
+    assert created_payload["profile_id"] == str(profile.profile_id)
+    assert created_payload["benchmark_identity"] == (
+        "CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0"
+    )
+    assert len(created_payload["report"]["control_results"]) == 10
+
+    report_id = created_payload["compatibility_report_id"]
+    listed = application.dispatch(
+        "GET",
+        collection_path,
+        headers={"Authorization": f"Bearer {ADMIN}"},
+    )
+    unauthenticated_list = application.dispatch("GET", collection_path)
+    retrieved = application.dispatch(
+        "GET",
+        f"{collection_path}/{report_id}",
+        headers={"Authorization": f"Bearer {ADMIN}"},
+    )
+    agent_authenticated_get = application.dispatch(
+        "GET",
+        f"{collection_path}/{report_id}",
+        headers={
+            "Authorization": (
+                "Bearer "
+                f"{enrollment.agent_credential.get_secret_value()}"
+            )
+        },
+    )
+    nonexistent_agent_route = application.dispatch(
+        "POST",
+        f"/api/v1/agents/{enrollment.agent_id}/compatibility-reports",
+        body,
+    )
+
+    assert listed.status is HTTPStatus.OK
+    assert unauthenticated_list.status is HTTPStatus.UNAUTHORIZED
+    assert [item["compatibility_report_id"] for item in json.loads(listed.body)] == [
+        report_id
+    ]
+    assert retrieved.status is HTTPStatus.OK
+    assert agent_authenticated_get.status is HTTPStatus.UNAUTHORIZED
+    assert json.loads(retrieved.body) == created_payload
+    assert nonexistent_agent_route.status is HTTPStatus.NOT_FOUND
 
 
 def test_invalid_transport_input_is_sanitized_and_never_echoed(tmp_path: Path) -> None:

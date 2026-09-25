@@ -1,8 +1,7 @@
-"""Versioned, transport-independent API surface for M6A.
+"""Versioned, transport-independent SENTRA Controller API surface.
 
-The methods are intentionally ordinary in-process calls.  A later HTTPS transport can
-bind these operations to the documented paths while enforcing TLS certificate/CA
-verification.  M6A does not normalize plaintext HTTP as a deployment mode.
+The HTTPS transport binds these narrow operations to documented paths; identity,
+authorization, and evidence-lineage decisions remain in the service layer.
 """
 
 from __future__ import annotations
@@ -12,6 +11,8 @@ from uuid import UUID
 
 from src.controller.models import (
     AdminAuth,
+    CompatibilityAnalysisRequest,
+    CompatibilityReportRecord,
     EnrollmentRequest,
     EnrollmentResponse,
     HeartbeatRequest,
@@ -54,6 +55,30 @@ ENDPOINTS = (
         f"{API_PREFIX}/admin/targets/{{target_id}}/jobs",
         "create_profile_job",
     ),
+    Endpoint(
+        "POST",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/"
+            "{profile_id}/compatibility-reports"
+        ),
+        "run_compatibility_analysis",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/"
+            "{profile_id}/compatibility-reports"
+        ),
+        "list_compatibility_reports",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/"
+            "{profile_id}/compatibility-reports/{compatibility_report_id}"
+        ),
+        "get_compatibility_report",
+    ),
 )
 
 
@@ -94,6 +119,53 @@ class ControllerAPI:
         if target_id != request.target_id:
             raise AuthenticationError("target path does not match request")
         return self._service.create_job(auth, request)
+
+    def run_compatibility_analysis(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        auth: AdminAuth,
+        request: CompatibilityAnalysisRequest,
+    ) -> CompatibilityReportRecord:
+        self._require_compatibility_path_binding(target_id, profile_id, request)
+        return self._service.run_compatibility_analysis(auth, request)
+
+    def list_compatibility_reports(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        auth: AdminAuth,
+    ) -> list[CompatibilityReportRecord]:
+        return self._service.list_compatibility_reports(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+        )
+
+    def get_compatibility_report(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        auth: AdminAuth,
+    ) -> CompatibilityReportRecord:
+        return self._service.get_compatibility_report(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+
+    @staticmethod
+    def _require_compatibility_path_binding(
+        target_id: UUID,
+        profile_id: UUID,
+        request: CompatibilityAnalysisRequest,
+    ) -> None:
+        if target_id != request.target_id or profile_id != request.profile_id:
+            raise AuthenticationError(
+                "compatibility path does not match request"
+            )
 
     @staticmethod
     def _require_agent_path_binding(path_agent_id: UUID, body_agent_id: UUID) -> None:
