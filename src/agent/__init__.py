@@ -21,6 +21,15 @@ from src.agent.transport import (
     AgentTransportConfigurationError,
     AgentTransportError,
 )
+from src.agent.validation import (
+    ControlValidationAdapter,
+    LocalSandboxControlValidator,
+)
+from src.agent.validation_journal import (
+    ValidationJournalError,
+    ValidationJournalInterruptedError,
+    ValidationJournalStore,
+)
 
 __all__ = [
     "AgentAlreadyEnrolledError",
@@ -42,4 +51,9 @@ __all__ = [
     "AgentTransportError",
     "LocalTargetProfiler",
     "TargetProfilerAdapter",
+    "ControlValidationAdapter",
+    "LocalSandboxControlValidator",
+    "ValidationJournalError",
+    "ValidationJournalInterruptedError",
+    "ValidationJournalStore",
 ]

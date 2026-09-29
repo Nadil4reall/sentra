@@ -1,7 +1,8 @@
 """Authenticated SENTRA Controller operations.
 
 The service remains transport-independent and exposes no target-side shell, SSH,
-generic command, or remediation capability.
+generic command, or production-target deployment capability.  M6D authorization is
+limited to a fixed existing M5 sandbox-validation adapter.
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ from src.controller.models import (
     ProfileRecord,
     ProfileSubmissionRequest,
     TargetRecord,
+    ValidationJobCreateRequest,
+    ValidationJobRecord,
+    ValidationResultRecord,
+    ValidationResultSubmissionRequest,
 )
 from src.controller.security import (
     CredentialHash,
@@ -49,6 +54,11 @@ from src.controller.storage import (
     ControllerRepository,
     StorageConflictError,
     StorageNotFoundError,
+)
+from src.controller.validation import (
+    canonical_validation_payload_json,
+    compatibility_reference_from_record,
+    require_payload_matches_job,
 )
 
 
@@ -279,17 +289,32 @@ class ControllerService:
     def poll_jobs(self, request: JobPollRequest) -> JobPollResponse:
         self._authenticate_agent(request.auth)
         try:
-            jobs = self._repository.poll_jobs(
+            dispatched_at = self._now()
+            profile_jobs = self._repository.poll_jobs(
                 target_id=request.auth.target_id,
                 agent_id=request.auth.agent_id,
-                dispatched_at=self._now(),
+                dispatched_at=dispatched_at,
                 limit=self._settings.max_jobs_per_poll,
+            )
+            remaining = self._settings.max_jobs_per_poll - len(profile_jobs)
+            validation_jobs = (
+                self._repository.poll_validation_jobs(
+                    target_id=request.auth.target_id,
+                    agent_id=request.auth.agent_id,
+                    dispatched_at=dispatched_at,
+                    # A single Agent cycle may arm at most one mutating M5
+                    # experiment.  PROFILE_TARGET work can still consume the
+                    # rest of the configured poll capacity.
+                    limit=min(remaining, 1),
+                )
+                if remaining > 0
+                else []
             )
         except StorageNotFoundError as error:
             raise AuthenticationError("invalid agent identity or credential") from error
         except StorageConflictError as error:
             raise ControllerConflictError("job dispatch conflicts with controller state") from error
-        return JobPollResponse(jobs=jobs)
+        return JobPollResponse(jobs=[*profile_jobs, *validation_jobs])
 
     def submit_profile(self, request: ProfileSubmissionRequest) -> ProfileRecord:
         """Validate and store an M3 profile with a controller-computed hash."""
@@ -437,6 +462,214 @@ class ControllerService:
         """Retrieve one immutable M6C report through its full lineage."""
 
         self._authenticate_admin(auth)
+        self._require_profile_target(target_id=target_id, profile_id=profile_id)
+        try:
+            report = self._repository.get_compatibility_report(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored compatibility report could not be validated"
+            ) from error
+        if report is None:
+            raise ControllerNotFoundError("compatibility report does not exist")
+        return report
+
+    def create_validation_job(
+        self,
+        auth: AdminAuth,
+        request: ValidationJobCreateRequest,
+    ) -> ValidationJobRecord:
+        """Authorize one fixed 7.1.1 M5 experiment for one stored M6C report."""
+
+        self._authenticate_admin(auth)
+        self._require_profile_target(
+            target_id=request.target_id,
+            profile_id=request.profile_id,
+        )
+        try:
+            report = self._repository.get_compatibility_report(
+                target_id=request.target_id,
+                profile_id=request.profile_id,
+                compatibility_report_id=request.compatibility_report_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored compatibility report could not be validated"
+            ) from error
+        if report is None:
+            raise ControllerNotFoundError("compatibility report does not exist")
+        try:
+            reference = compatibility_reference_from_record(
+                report,
+                request.control_id,
+            )
+            job = ValidationJobRecord(
+                validation_job_id=self._new_id(),
+                request_id=request.request_id,
+                target_id=request.target_id,
+                profile_id=request.profile_id,
+                compatibility_report_id=request.compatibility_report_id,
+                control_id=request.control_id,
+                validation_mode=request.validation_mode,
+                execution_mode=request.execution_mode,
+                administrator_approval_acknowledged=(
+                    request.administrator_approval_acknowledged
+                ),
+                compatibility_risk_acknowledged=(
+                    request.compatibility_risk_acknowledged
+                ),
+                compatibility_override_reason=(
+                    request.compatibility_override_reason
+                ),
+                compatibility_reference=reference,
+                status=JobStatus.PENDING,
+                created_at=self._now(),
+            )
+        except ValueError as error:
+            raise ControllerConflictError(
+                "compatibility evidence does not authorize the requested validation"
+            ) from error
+        try:
+            return self._repository.create_validation_job(job)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError(
+                "validation job lineage does not exist"
+            ) from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "validation job conflicts with Controller state"
+            ) from error
+
+    def submit_validation_result(
+        self,
+        request: ValidationResultSubmissionRequest,
+    ) -> ValidationResultRecord:
+        """Validate, hash, and persist one fixed-adapter M5 result."""
+
+        self._authenticate_agent(request.auth)
+        try:
+            stored_job = self._repository.get_validation_job(
+                request.payload.validation_job_id
+            )
+        except (StorageConflictError, StorageNotFoundError) as error:
+            raise ControllerConflictError(
+                "stored validation job could not be validated"
+            ) from error
+        if stored_job is None:
+            raise ControllerNotFoundError("validation job does not exist")
+        job = stored_job.job
+        if (
+            job.target_id != request.auth.target_id
+            or stored_job.assigned_agent_id != request.auth.agent_id
+        ):
+            raise AuthorizationError(
+                "validation job is not assigned to this agent"
+            )
+        if job.status not in {JobStatus.DISPATCHED, JobStatus.COMPLETED}:
+            raise ControllerConflictError(
+                "validation job is not awaiting or retaining a result"
+            )
+        try:
+            require_payload_matches_job(request.payload, job)
+            payload_json = canonical_validation_payload_json(request.payload)
+        except ValueError as error:
+            raise ControllerConflictError(
+                "validation evidence conflicts with the authorized job"
+            ) from error
+        if job.dispatched_at is None:
+            raise ControllerConflictError("validation job has no dispatch time")
+        completed_at = self._now()
+        if (
+            request.payload.report.generated_at < job.dispatched_at
+            or completed_at < request.payload.report.generated_at
+        ):
+            raise ControllerConflictError(
+                "validation evidence timeline conflicts with job dispatch"
+            )
+        result_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        record = ValidationResultRecord(
+            validation_result_id=self._new_id(),
+            agent_id=request.auth.agent_id,
+            created_at=job.created_at,
+            dispatched_at=job.dispatched_at,
+            completed_at=completed_at,
+            result_sha256=result_sha256,
+            payload=request.payload,
+        )
+        try:
+            return self._repository.store_validation_result(record, payload_json)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("validation job does not exist") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "validation result conflicts with Controller state"
+            ) from error
+
+    def list_validation_results(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[ValidationResultRecord]:
+        self._authenticate_admin(auth)
+        self._require_compatibility_lineage(
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+        try:
+            return self._repository.list_validation_results(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored validation result could not be validated"
+            ) from error
+
+    def get_validation_result(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        validation_result_id: UUID,
+    ) -> ValidationResultRecord:
+        self._authenticate_admin(auth)
+        self._require_compatibility_lineage(
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+        try:
+            result = self._repository.get_validation_result(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+                validation_result_id=validation_result_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored validation result could not be validated"
+            ) from error
+        if result is None:
+            raise ControllerNotFoundError("validation result does not exist")
+        return result
+
+    def _require_compatibility_lineage(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> CompatibilityReportRecord:
         self._require_profile_target(target_id=target_id, profile_id=profile_id)
         try:
             report = self._repository.get_compatibility_report(

@@ -1,4 +1,4 @@
-"""Command-line entry point for one safe M6B Agent execution cycle."""
+"""Command-line entry point for one safe M6B/M6D Agent execution cycle."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from src.agent.protocol import AgentProtocol
 from src.agent.runtime import AgentRuntime, AgentRuntimeError
 from src.agent.state import AgentStateError, AgentStateStore
 from src.agent.transport import AgentHTTPSClient, AgentTransportError
+from src.agent.validation import LocalSandboxControlValidator
+from src.agent.validation_journal import ValidationJournalStore
 from src.controller.models import ObservedTargetMetadata
 from src.target_profiler.profiler import inspect_local_target
 
@@ -35,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run one TLS-verified SENTRA Agent cycle: enroll if needed, "
-            "heartbeat, poll PROFILE_TARGET jobs, and submit M3 evidence"
+            "heartbeat, poll constrained jobs, and submit validated evidence"
         )
     )
     parser.add_argument(
@@ -83,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="per-request HTTPS timeout in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--sandbox-validation-ack",
+        action="store_true",
+        help=(
+            "locally acknowledge that this host is the dedicated M5 sandbox "
+            "for this Agent cycle; this is separate from Controller administrator "
+            "approval and does not select a control or action"
+        ),
     )
     return parser
 
@@ -209,6 +220,11 @@ def main(argv: list[str] | None = None) -> int:
             bootstrap_credential=credential,
             profiler_version=runtime_config.profiler_version,
             sentra_version=runtime_config.sentra_version,
+            control_validator=LocalSandboxControlValidator(),
+            validation_journal=ValidationJournalStore.for_agent_state(
+                runtime_config.state_path
+            ),
+            sandbox_validation_acknowledged=args.sandbox_validation_ack,
         )
         result = runtime.run_once()
     except (

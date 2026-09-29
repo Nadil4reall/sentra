@@ -39,6 +39,8 @@ from src.controller.models import (
     JobCreateRequest,
     JobPollRequest,
     ProfileSubmissionRequest,
+    ValidationJobCreateRequest,
+    ValidationResultSubmissionRequest,
 )
 from src.controller.service import (
     AuthenticationError,
@@ -52,7 +54,8 @@ from src.controller.storage import SQLiteControllerRepository
 
 
 _AGENT_ROUTE = re.compile(
-    rf"^{re.escape(API_PREFIX)}/agents/([^/]+)/(heartbeat|jobs/poll|profiles)$"
+    rf"^{re.escape(API_PREFIX)}/agents/([^/]+)/"
+    r"(heartbeat|jobs/poll|profiles|validation-results)$"
 )
 _ADMIN_JOB_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/jobs$"
@@ -64,6 +67,18 @@ _ADMIN_COMPATIBILITY_COLLECTION_ROUTE = re.compile(
 _ADMIN_COMPATIBILITY_ITEM_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
     r"compatibility-reports/([^/]+)$"
+)
+_ADMIN_VALIDATION_JOB_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/validation-jobs$"
+)
+_ADMIN_VALIDATION_RESULT_COLLECTION_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/validation-results$"
+)
+_ADMIN_VALIDATION_RESULT_ITEM_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/validation-results/([^/]+)$"
 )
 _JSON_CONTENT_TYPE = "application/json"
 
@@ -200,9 +215,14 @@ class ControllerHTTPSApplication:
                 elif operation == "jobs/poll":
                     request = JobPollRequest.model_validate_json(body)
                     response = self._api.poll_jobs(agent_id, request)
-                else:
+                elif operation == "profiles":
                     request = ProfileSubmissionRequest.model_validate_json(body)
                     response = self._api.submit_profile(agent_id, request)
+                else:
+                    request = ValidationResultSubmissionRequest.model_validate_json(
+                        body
+                    )
+                    response = self._api.submit_validation_result(agent_id, request)
                 return _json_response(HTTPStatus.OK, _model_payload(response))
 
             if path == f"{API_PREFIX}/admin/targets":
@@ -211,6 +231,62 @@ class ControllerHTTPSApplication:
                 auth = self._admin_auth(normalized_headers)
                 targets = self._api.list_targets(auth)
                 return _json_response(HTTPStatus.OK, _list_payload(targets))
+
+            validation_result_item_match = (
+                _ADMIN_VALIDATION_RESULT_ITEM_ROUTE.fullmatch(path)
+            )
+            if validation_result_item_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                target_id = UUID(validation_result_item_match.group(1))
+                profile_id = UUID(validation_result_item_match.group(2))
+                report_id = UUID(validation_result_item_match.group(3))
+                result_id = UUID(validation_result_item_match.group(4))
+                auth = self._admin_auth(normalized_headers)
+                result = self._api.get_validation_result(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    result_id,
+                    auth,
+                )
+                return _json_response(HTTPStatus.OK, _model_payload(result))
+
+            validation_result_collection_match = (
+                _ADMIN_VALIDATION_RESULT_COLLECTION_ROUTE.fullmatch(path)
+            )
+            if validation_result_collection_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                target_id = UUID(validation_result_collection_match.group(1))
+                profile_id = UUID(validation_result_collection_match.group(2))
+                report_id = UUID(validation_result_collection_match.group(3))
+                auth = self._admin_auth(normalized_headers)
+                results = self._api.list_validation_results(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    auth,
+                )
+                return _json_response(HTTPStatus.OK, _list_payload(results))
+
+            validation_job_match = _ADMIN_VALIDATION_JOB_ROUTE.fullmatch(path)
+            if validation_job_match is not None:
+                if method != "POST":
+                    return self._method_not_allowed()
+                target_id = UUID(validation_job_match.group(1))
+                profile_id = UUID(validation_job_match.group(2))
+                report_id = UUID(validation_job_match.group(3))
+                auth = self._admin_auth(normalized_headers)
+                request = ValidationJobCreateRequest.model_validate_json(body)
+                job = self._api.create_validation_job(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    auth,
+                    request,
+                )
+                return _json_response(HTTPStatus.CREATED, _model_payload(job))
 
             compatibility_item_match = (
                 _ADMIN_COMPATIBILITY_ITEM_ROUTE.fullmatch(path)

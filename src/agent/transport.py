@@ -30,6 +30,8 @@ from src.controller.models import (
     JobPollResponse,
     ProfileRecord,
     ProfileSubmissionRequest,
+    ValidationResultRecord,
+    ValidationResultSubmissionRequest,
 )
 
 
@@ -94,7 +96,8 @@ def _request_payload(
     request: EnrollmentRequest
     | HeartbeatRequest
     | JobPollRequest
-    | ProfileSubmissionRequest,
+    | ProfileSubmissionRequest
+    | ValidationResultSubmissionRequest,
 ) -> bytes:
     """Serialize one known request, materializing only its required wire secret."""
 
@@ -185,13 +188,25 @@ class AgentHTTPSClient:
             expected_status=200,
         )
 
+    def submit_validation_result(
+        self,
+        request: ValidationResultSubmissionRequest,
+    ) -> ValidationResultRecord:
+        return self._post(
+            f"agents/{request.auth.agent_id}/validation-results",
+            request,
+            ValidationResultRecord,
+            expected_status=200,
+        )
+
     def _post(
         self,
         path: str,
         request_model: EnrollmentRequest
         | HeartbeatRequest
         | JobPollRequest
-        | ProfileSubmissionRequest,
+        | ProfileSubmissionRequest
+        | ValidationResultSubmissionRequest,
         response_model: type[_ResponseModel],
         *,
         expected_status: int,

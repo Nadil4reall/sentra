@@ -1,14 +1,22 @@
-"""One-cycle orchestration for the narrow M6B Agent workflow."""
+"""One-cycle orchestration for the narrow M6B/M6D Agent workflow."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 from pydantic import SecretStr
 
 from src.agent.profiler import TargetProfilerAdapter
 from src.agent.protocol import AgentProtocol
+from src.agent.validation import ControlValidationAdapter
+from src.agent.validation_journal import (
+    ValidationJournalInterruptedError,
+    ValidationJournalState,
+    ValidationJournalStore,
+    validation_payload_sha256,
+)
 from src.controller.models import (
     EnrollmentRequest,
     EnrollmentResponse,
@@ -16,10 +24,14 @@ from src.controller.models import (
     HeartbeatResponse,
     JobPollRequest,
     JobPollResponse,
+    JobRecord,
     JobStatus,
     JobType,
     ProfileRecord,
     ProfileSubmissionRequest,
+    ValidationJobRecord,
+    ValidationResultRecord,
+    ValidationResultSubmissionRequest,
 )
 
 
@@ -40,6 +52,10 @@ class AgentControllerTransport(Protocol):
         self, request: ProfileSubmissionRequest
     ) -> ProfileRecord: ...
 
+    def submit_validation_result(
+        self, request: ValidationResultSubmissionRequest
+    ) -> ValidationResultRecord: ...
+
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -50,12 +66,26 @@ class AgentRunResult:
     jobs_polled: int
     profiles_submitted: int
 
+    @property
+    def validation_results_submitted(self) -> int:
+        """Count completed validation submissions without changing M6B output.
+
+        A successful cycle preflights every polled job as exactly one of the
+        closed ``PROFILE_TARGET`` or ``VALIDATE_CONTROL`` variants and returns
+        only after each has been submitted.  The difference is therefore the
+        validation-result count.  Keeping this as a derived property preserves
+        the established credential-free CLI JSON shape from M6B.
+        """
+
+        return self.jobs_polled - self.profiles_submitted
+
 
 class AgentRuntime:
     """Enroll if necessary, heartbeat, poll, profile locally, and submit.
 
-    This class deliberately exposes no generic executor.  The only accepted
-    job is ``PROFILE_TARGET``, which maps to the injected read-only M3 adapter.
+    This class deliberately exposes no generic executor.  ``PROFILE_TARGET``
+    maps to the injected read-only M3 adapter; ``VALIDATE_CONTROL`` maps to the
+    separately injected, allowlisted M5 adapter and its crash-safe journal.
     """
 
     def __init__(
@@ -67,6 +97,9 @@ class AgentRuntime:
         bootstrap_credential: SecretStr | None = None,
         profiler_version: str | None = None,
         sentra_version: str | None = None,
+        control_validator: ControlValidationAdapter | None = None,
+        validation_journal: ValidationJournalStore | None = None,
+        sandbox_validation_acknowledged: bool = False,
     ) -> None:
         self._protocol = protocol
         self._transport = transport
@@ -74,6 +107,47 @@ class AgentRuntime:
         self._bootstrap_credential = bootstrap_credential
         self._profiler_version = profiler_version
         self._sentra_version = sentra_version
+        self._control_validator = control_validator
+        self._validation_journal = validation_journal
+        self._sandbox_validation_acknowledged = (
+            sandbox_validation_acknowledged
+        )
+
+    @staticmethod
+    def _preflight_jobs(
+        jobs: list[JobRecord | ValidationJobRecord],
+        *,
+        target_id: UUID,
+    ) -> None:
+        validation_jobs = 0
+        for job in jobs:
+            if job.target_id != target_id:
+                raise AgentRuntimeError(
+                    "Controller returned a job outside this Agent identity"
+                )
+            if job.status is not JobStatus.DISPATCHED:
+                raise AgentRuntimeError(
+                    "Controller returned a job that is not dispatched"
+                )
+            if isinstance(job, JobRecord):
+                if job.job_type is not JobType.PROFILE_TARGET:
+                    raise AgentRuntimeError(
+                        "Controller returned an unsupported Agent job"
+                    )
+            elif isinstance(job, ValidationJobRecord):
+                if job.job_type is not JobType.VALIDATE_CONTROL:
+                    raise AgentRuntimeError(
+                        "Controller returned an unsupported Agent job"
+                    )
+                validation_jobs += 1
+            else:  # defensive boundary around injected transports
+                raise AgentRuntimeError(
+                    "Controller returned an unsupported Agent job"
+                )
+        if validation_jobs > 1:
+            raise AgentRuntimeError(
+                "Controller returned more than one validation job in one cycle"
+            )
 
     def run_once(self) -> AgentRunResult:
         enrolled_during_run = False
@@ -98,43 +172,91 @@ class AgentRuntime:
         polled = self._transport.poll_jobs(
             self._protocol.create_job_poll_request()
         )
+        state = self._protocol.state
+        if state.target_id is None or state.agent_id is None:
+            raise AgentRuntimeError("Agent identity is incomplete after enrollment")
+        self._preflight_jobs(polled.jobs, target_id=state.target_id)
+
         profiles_submitted = 0
         for job in polled.jobs:
-            state = self._protocol.state
-            if (
-                state.target_id is None
-                or state.agent_id is None
-                or job.target_id != state.target_id
-            ):
-                raise AgentRuntimeError(
-                    "Controller returned a job outside this Agent identity"
+            if isinstance(job, JobRecord):
+                profile = self._profiler.collect()
+                request = self._protocol.create_profile_submission_request(
+                    job_id=job.job_id,
+                    profile=profile,
+                    profiler_version=self._profiler_version,
+                    sentra_version=self._sentra_version,
                 )
-            if (
-                job.job_type is not JobType.PROFILE_TARGET
-                or job.status is not JobStatus.DISPATCHED
-            ):
-                raise AgentRuntimeError(
-                    "Controller returned an unsupported Agent job"
-                )
+                stored = self._transport.submit_profile(request)
+                if (
+                    stored.target_id != state.target_id
+                    or stored.agent_id != state.agent_id
+                    or stored.job_id != job.job_id
+                    or stored.collected_at != profile.collected_at
+                ):
+                    raise AgentRuntimeError(
+                        "Controller returned inconsistent profile lineage"
+                    )
+                profiles_submitted += 1
+                continue
 
-            profile = self._profiler.collect()
-            request = self._protocol.create_profile_submission_request(
-                job_id=job.job_id,
-                profile=profile,
-                profiler_version=self._profiler_version,
-                sentra_version=self._sentra_version,
-            )
-            stored = self._transport.submit_profile(request)
-            if (
-                stored.target_id != state.target_id
-                or stored.agent_id != state.agent_id
-                or stored.job_id != job.job_id
-                or stored.collected_at != profile.collected_at
-            ):
+            validator = self._control_validator
+            journal = self._validation_journal
+            if validator is None or journal is None:
                 raise AgentRuntimeError(
-                    "Controller returned inconsistent profile lineage"
+                    "Agent validation support is not configured"
                 )
-            profiles_submitted += 1
+            with journal.acquire(
+                job,
+                target_id=state.target_id,
+                agent_id=state.agent_id,
+            ) as locked:
+                entry = locked.entry
+                if entry is None:
+                    locked.mark_started()
+                    try:
+                        payload = validator.validate(
+                            job,
+                            sandbox_operator_acknowledged=(
+                                self._sandbox_validation_acknowledged
+                            ),
+                        )
+                    except Exception:
+                        # The durable STARTED state intentionally survives.  A
+                        # subsequent Agent cycle must not repeat a mutation
+                        # whose outcome was not journaled.
+                        raise ValidationJournalInterruptedError(
+                            "validation stopped after execution was armed; "
+                            "manual sandbox inspection is required"
+                        ) from None
+                    entry = locked.cache_result(payload)
+                elif entry.state is ValidationJournalState.STARTED:
+                    raise ValidationJournalInterruptedError(
+                        "a previous validation stopped before evidence was "
+                        "journaled; manual sandbox inspection is required"
+                    )
+
+                payload = entry.result
+                if payload is None:  # guarded by ValidationJournalEntry
+                    raise AgentRuntimeError(
+                        "validation journal contains no result evidence"
+                    )
+                request = (
+                    self._protocol.create_validation_result_submission_request(
+                        payload
+                    )
+                )
+                stored = self._transport.submit_validation_result(request)
+                if (
+                    stored.agent_id != state.agent_id
+                    or stored.payload != payload
+                    or stored.result_sha256
+                    != validation_payload_sha256(payload)
+                ):
+                    raise AgentRuntimeError(
+                        "Controller returned inconsistent validation lineage"
+                )
+                locked.mark_acknowledged(stored)
 
         return AgentRunResult(
             enrolled_during_run=enrolled_during_run,

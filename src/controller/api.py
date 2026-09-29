@@ -24,6 +24,10 @@ from src.controller.models import (
     ProfileRecord,
     ProfileSubmissionRequest,
     TargetRecord,
+    ValidationJobCreateRequest,
+    ValidationJobRecord,
+    ValidationResultRecord,
+    ValidationResultSubmissionRequest,
 )
 from src.controller.service import AuthenticationError, ControllerService
 
@@ -48,6 +52,11 @@ ENDPOINTS = (
     ),
     Endpoint(
         "POST", f"{API_PREFIX}/agents/{{agent_id}}/profiles", "submit_profile"
+    ),
+    Endpoint(
+        "POST",
+        f"{API_PREFIX}/agents/{{agent_id}}/validation-results",
+        "submit_validation_result",
     ),
     Endpoint("GET", f"{API_PREFIX}/admin/targets", "list_targets"),
     Endpoint(
@@ -79,6 +88,31 @@ ENDPOINTS = (
         ),
         "get_compatibility_report",
     ),
+    Endpoint(
+        "POST",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/validation-jobs"
+        ),
+        "create_validation_job",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/validation-results"
+        ),
+        "list_validation_results",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/validation-results/"
+            "{validation_result_id}"
+        ),
+        "get_validation_result",
+    ),
 )
 
 
@@ -106,6 +140,14 @@ class ControllerAPI:
     ) -> ProfileRecord:
         self._require_agent_path_binding(agent_id, request.auth.agent_id)
         return self._service.submit_profile(request)
+
+    def submit_validation_result(
+        self,
+        agent_id: UUID,
+        request: ValidationResultSubmissionRequest,
+    ) -> ValidationResultRecord:
+        self._require_agent_path_binding(agent_id, request.auth.agent_id)
+        return self._service.submit_validation_result(request)
 
     def list_targets(self, auth: AdminAuth) -> list[TargetRecord]:
         return self._service.list_targets(auth)
@@ -156,6 +198,52 @@ class ControllerAPI:
             compatibility_report_id=compatibility_report_id,
         )
 
+    def create_validation_job(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        auth: AdminAuth,
+        request: ValidationJobCreateRequest,
+    ) -> ValidationJobRecord:
+        self._require_validation_path_binding(
+            target_id,
+            profile_id,
+            compatibility_report_id,
+            request,
+        )
+        return self._service.create_validation_job(auth, request)
+
+    def list_validation_results(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        auth: AdminAuth,
+    ) -> list[ValidationResultRecord]:
+        return self._service.list_validation_results(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+
+    def get_validation_result(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        validation_result_id: UUID,
+        auth: AdminAuth,
+    ) -> ValidationResultRecord:
+        return self._service.get_validation_result(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            validation_result_id=validation_result_id,
+        )
+
     @staticmethod
     def _require_compatibility_path_binding(
         target_id: UUID,
@@ -166,6 +254,20 @@ class ControllerAPI:
             raise AuthenticationError(
                 "compatibility path does not match request"
             )
+
+    @staticmethod
+    def _require_validation_path_binding(
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        request: ValidationJobCreateRequest,
+    ) -> None:
+        if (
+            target_id != request.target_id
+            or profile_id != request.profile_id
+            or compatibility_report_id != request.compatibility_report_id
+        ):
+            raise AuthenticationError("validation path does not match request")
 
     @staticmethod
     def _require_agent_path_binding(path_agent_id: UUID, body_agent_id: UUID) -> None:

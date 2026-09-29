@@ -32,7 +32,17 @@ from src.controller.models import (
     ProfileRecord,
     TargetRecord,
     TargetStatus,
+    ValidationJobRecord,
+    ValidationMode,
+    ValidationResultPayload,
+    ValidationResultRecord,
 )
+from src.controller.validation import (
+    canonical_validation_payload_json,
+    compatibility_reference_from_record,
+    require_payload_matches_job,
+)
+from src.sandbox_validator.models import CompatibilityReference, ExecutionMode
 from src.target_profiler.models import TargetProfile
 
 
@@ -85,6 +95,14 @@ class StoredCompatibilityReport:
     canonical_payload_json: str
 
 
+@dataclass(frozen=True)
+class StoredValidationJob:
+    """A constrained validation job plus its assigned Agent, if dispatched."""
+
+    job: ValidationJobRecord
+    assigned_agent_id: UUID | None
+
+
 class ControllerRepository(Protocol):
     """Replaceable persistence operations used by ``ControllerService``."""
 
@@ -132,6 +150,15 @@ class ControllerRepository(Protocol):
         limit: int,
     ) -> list[JobRecord]: ...
 
+    def poll_validation_jobs(
+        self,
+        *,
+        target_id: UUID,
+        agent_id: UUID,
+        dispatched_at: datetime,
+        limit: int,
+    ) -> list[ValidationJobRecord]: ...
+
     def store_profile(self, record: ProfileRecord, payload_json: str) -> ProfileRecord: ...
 
     def get_profile(self, profile_id: UUID) -> ProfileRecord | None: ...
@@ -154,6 +181,39 @@ class ControllerRepository(Protocol):
         self, *, target_id: UUID, profile_id: UUID
     ) -> list[CompatibilityReportRecord]: ...
 
+    def create_validation_job(
+        self, job: ValidationJobRecord
+    ) -> ValidationJobRecord: ...
+
+    def get_validation_job(
+        self, validation_job_id: UUID
+    ) -> StoredValidationJob | None: ...
+
+    def store_validation_result(
+        self, record: ValidationResultRecord, payload_json: str
+    ) -> ValidationResultRecord: ...
+
+    def get_validation_result_for_job(
+        self, validation_job_id: UUID
+    ) -> ValidationResultRecord | None: ...
+
+    def get_validation_result(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        validation_result_id: UUID,
+    ) -> ValidationResultRecord | None: ...
+
+    def list_validation_results(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[ValidationResultRecord]: ...
+
 
 def _canonical_json(model: ObservedTargetMetadata) -> str:
     return json.dumps(
@@ -167,6 +227,18 @@ def _canonical_json(model: ObservedTargetMetadata) -> str:
 def _canonical_payload_json(model: TargetProfile | CompatibilityReport) -> str:
     return json.dumps(
         model.model_dump(mode="json"),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _canonical_compatibility_reference_json(
+    reference: CompatibilityReference,
+) -> str:
+    return json.dumps(
+        reference.model_dump(mode="json"),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -224,11 +296,185 @@ _CREATE_COMPATIBILITY_REPORTS_SQL = """
     )
 """
 
+_VALIDATION_JOB_COLUMNS = {
+    "validation_job_id",
+    "request_id",
+    "target_id",
+    "profile_id",
+    "compatibility_report_id",
+    "assigned_agent_id",
+    "job_type",
+    "control_id",
+    "validation_mode",
+    "execution_mode",
+    "administrator_approval_acknowledged",
+    "compatibility_risk_acknowledged",
+    "compatibility_override_reason",
+    "compatibility_reference_json",
+    "status",
+    "created_at",
+    "dispatched_at",
+    "completed_at",
+}
+_VALIDATION_RESULT_COLUMNS = {
+    "validation_result_id",
+    "validation_job_id",
+    "target_id",
+    "profile_id",
+    "compatibility_report_id",
+    "agent_id",
+    "control_id",
+    "validation_mode",
+    "execution_mode",
+    "created_at",
+    "dispatched_at",
+    "completed_at",
+    "result_sha256",
+    "payload_json",
+}
+_CREATE_VALIDATION_JOBS_SQL = """
+    CREATE TABLE validation_jobs (
+        validation_job_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        target_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        compatibility_report_id TEXT NOT NULL,
+        assigned_agent_id TEXT,
+        job_type TEXT NOT NULL CHECK (job_type = 'VALIDATE_CONTROL'),
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        validation_mode TEXT NOT NULL CHECK (validation_mode = 'sandbox'),
+        execution_mode TEXT NOT NULL CHECK (execution_mode = 'execute'),
+        administrator_approval_acknowledged INTEGER NOT NULL CHECK (
+            administrator_approval_acknowledged = 1
+        ),
+        compatibility_risk_acknowledged INTEGER NOT NULL CHECK (
+            compatibility_risk_acknowledged IN (0, 1)
+        ),
+        compatibility_override_reason TEXT CHECK (
+            compatibility_override_reason IS NULL
+            OR length(trim(compatibility_override_reason)) > 0
+        ),
+        compatibility_reference_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+            status IN ('pending', 'dispatched', 'completed')
+        ),
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        completed_at TEXT,
+        CHECK (
+            (
+                status = 'pending'
+                AND assigned_agent_id IS NULL
+                AND dispatched_at IS NULL
+                AND completed_at IS NULL
+            ) OR (
+                status = 'dispatched'
+                AND assigned_agent_id IS NOT NULL
+                AND dispatched_at IS NOT NULL
+                AND completed_at IS NULL
+            ) OR (
+                status = 'completed'
+                AND assigned_agent_id IS NOT NULL
+                AND dispatched_at IS NOT NULL
+                AND completed_at IS NOT NULL
+            )
+        ),
+        UNIQUE (
+            target_id, profile_id, compatibility_report_id, validation_job_id
+        ),
+        UNIQUE (target_id, validation_job_id, assigned_agent_id),
+        FOREIGN KEY (target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (profile_id) REFERENCES profiles(profile_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id),
+        FOREIGN KEY (compatibility_report_id)
+            REFERENCES compatibility_reports(compatibility_report_id),
+        FOREIGN KEY (target_id, profile_id, compatibility_report_id)
+            REFERENCES compatibility_reports(
+                target_id, profile_id, compatibility_report_id
+            ),
+        FOREIGN KEY (assigned_agent_id) REFERENCES agents(agent_id),
+        FOREIGN KEY (target_id, assigned_agent_id)
+            REFERENCES agents(target_id, agent_id)
+    )
+"""
+_CREATE_VALIDATION_RESULTS_SQL = """
+    CREATE TABLE validation_results (
+        validation_result_id TEXT PRIMARY KEY,
+        validation_job_id TEXT NOT NULL UNIQUE,
+        target_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        compatibility_report_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        validation_mode TEXT NOT NULL CHECK (validation_mode = 'sandbox'),
+        execution_mode TEXT NOT NULL CHECK (execution_mode = 'execute'),
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        result_sha256 TEXT NOT NULL CHECK (
+            length(result_sha256) = 64
+            AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        payload_json TEXT NOT NULL,
+        UNIQUE (
+            target_id, profile_id, compatibility_report_id,
+            validation_job_id, validation_result_id
+        ),
+        FOREIGN KEY (target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (profile_id) REFERENCES profiles(profile_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id),
+        FOREIGN KEY (compatibility_report_id)
+            REFERENCES compatibility_reports(compatibility_report_id),
+        FOREIGN KEY (target_id, profile_id, compatibility_report_id)
+            REFERENCES compatibility_reports(
+                target_id, profile_id, compatibility_report_id
+            ),
+        FOREIGN KEY (
+            target_id, profile_id, compatibility_report_id, validation_job_id
+        ) REFERENCES validation_jobs(
+            target_id, profile_id, compatibility_report_id, validation_job_id
+        ),
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+        FOREIGN KEY (target_id, validation_job_id, agent_id)
+            REFERENCES validation_jobs(
+                target_id, validation_job_id, assigned_agent_id
+            )
+    )
+"""
+
 
 def _normalized_schema_sql(value: str) -> str:
     """Normalize insignificant SQL whitespace for an exact schema fingerprint."""
 
     return " ".join(value.strip().rstrip(";").split())
+
+
+def _canonical_stored_uuid_text(
+    raw: object,
+    field_name: str,
+) -> UUID:
+    """Require persisted UUID text to already use canonical representation."""
+
+    if not isinstance(raw, str):
+        raise StorageConflictError(
+            f"stored {field_name} is not canonical UUID text"
+        )
+
+    try:
+        parsed = UUID(raw)
+    except (TypeError, ValueError, AttributeError) as error:
+        raise StorageConflictError(
+            f"stored {field_name} is not a valid UUID"
+        ) from error
+
+    if raw != str(parsed):
+        raise StorageConflictError(
+            f"stored {field_name} is not a canonical UUID"
+        )
+
+    return parsed
 
 
 class SQLiteControllerRepository:
@@ -422,6 +668,25 @@ class SQLiteControllerRepository:
                 """
             )
             self._initialize_compatibility_reports(connection)
+            # SQLite DDL is not implicitly wrapped by the Python driver.  A
+            # savepoint makes the two-table M6D addition atomic while also
+            # remaining valid if initialization is later called inside a
+            # broader migration transaction.
+            connection.execute("SAVEPOINT sentra_m6d_validation_schema")
+            try:
+                self._initialize_validation_storage(connection)
+            except BaseException:
+                connection.execute(
+                    "ROLLBACK TO SAVEPOINT sentra_m6d_validation_schema"
+                )
+                connection.execute(
+                    "RELEASE SAVEPOINT sentra_m6d_validation_schema"
+                )
+                raise
+            else:
+                connection.execute(
+                    "RELEASE SAVEPOINT sentra_m6d_validation_schema"
+                )
 
     @staticmethod
     def _initialize_compatibility_reports(connection: sqlite3.Connection) -> None:
@@ -478,6 +743,93 @@ class SQLiteControllerRepository:
             )
             """
         )
+
+    @staticmethod
+    def _initialize_validation_storage(connection: sqlite3.Connection) -> None:
+        """Add M6D storage atomically or reject any unrecognized partial schema.
+
+        M6C databases have neither table, so their only truthful migration is
+        additive.  Once either M6D table exists, both exact schemas must be
+        present; silently completing or reshaping a partial schema could hide
+        lost authorization or validation evidence.
+        """
+
+        table_rows = connection.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'table' AND name IN (?, ?)",
+            ("validation_jobs", "validation_results"),
+        ).fetchall()
+        table_sql = {row["name"]: row["sql"] for row in table_rows}
+        expected_sql = {
+            "validation_jobs": _CREATE_VALIDATION_JOBS_SQL,
+            "validation_results": _CREATE_VALIDATION_RESULTS_SQL,
+        }
+        expected_columns = {
+            "validation_jobs": _VALIDATION_JOB_COLUMNS,
+            "validation_results": _VALIDATION_RESULT_COLUMNS,
+        }
+
+        if not table_sql:
+            connection.execute(_CREATE_VALIDATION_JOBS_SQL)
+            connection.execute(_CREATE_VALIDATION_RESULTS_SQL)
+            table_sql = {
+                row["name"]: row["sql"]
+                for row in connection.execute(
+                    "SELECT name, sql FROM sqlite_master "
+                    "WHERE type = 'table' AND name IN (?, ?)",
+                    ("validation_jobs", "validation_results"),
+                ).fetchall()
+            }
+        elif set(table_sql) != set(expected_sql):
+            raise ControllerStorageSecurityError(
+                "controller validation schema is incomplete or not recognized"
+            )
+
+        for table_name, create_sql in expected_sql.items():
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    f"PRAGMA table_info({table_name})"
+                ).fetchall()
+            }
+            schema_sql = table_sql.get(table_name)
+            if (
+                columns != expected_columns[table_name]
+                or not isinstance(schema_sql, str)
+                or _normalized_schema_sql(schema_sql)
+                != _normalized_schema_sql(create_sql)
+            ):
+                raise ControllerStorageSecurityError(
+                    "controller validation schema constraints are not recognized"
+                )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS validation_jobs_target_status_idx
+            ON validation_jobs(target_id, status, created_at, validation_job_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS validation_results_lineage_completed_idx
+            ON validation_results(
+                target_id, profile_id, compatibility_report_id,
+                completed_at, validation_result_id
+            )
+            """
+        )
+        foreign_key_violations = [
+            *connection.execute(
+                "PRAGMA foreign_key_check(validation_jobs)"
+            ).fetchall(),
+            *connection.execute(
+                "PRAGMA foreign_key_check(validation_results)"
+            ).fetchall(),
+        ]
+        if foreign_key_violations:
+            raise ControllerStorageSecurityError(
+                "controller validation storage contains broken lineage"
+            )
 
     def enroll(
         self,
@@ -686,6 +1038,11 @@ class SQLiteControllerRepository:
     def create_job(self, job: JobRecord) -> JobRecord:
         try:
             with self._connection() as connection, connection:
+                if connection.execute(
+                    "SELECT 1 FROM validation_jobs WHERE validation_job_id = ?",
+                    (str(job.job_id),),
+                ).fetchone() is not None:
+                    raise StorageConflictError("controller job ID already exists")
                 connection.execute(
                     """
                     INSERT INTO jobs (
@@ -749,6 +1106,7 @@ class SQLiteControllerRepository:
             ).fetchone()
             if binding is None:
                 raise StorageNotFoundError("target and agent binding does not exist")
+
             existing = connection.execute(
                 """
                 SELECT * FROM jobs
@@ -803,6 +1161,141 @@ class SQLiteControllerRepository:
                         tuple(row["job_id"] for row in pending),
                     ).fetchall()
         return [self._job_from_row(row).job for row in [*existing, *claimed]]
+
+    def poll_validation_jobs(
+        self,
+        *,
+        target_id: UUID,
+        agent_id: UUID,
+        dispatched_at: datetime,
+        limit: int,
+    ) -> list[ValidationJobRecord]:
+        """Return only this target/Agent's strict, allowlisted validation jobs.
+
+        Existing dispatched work is returned without changing its original
+        dispatch timestamp.  Pending work is fully reconstructed and its M3/M4
+        lineage is revalidated before any row is claimed, so a corrupt record
+        rolls the transaction back rather than becoming a mutation request.
+        """
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            binding = connection.execute(
+                """
+                SELECT 1 FROM agents WHERE target_id = ? AND agent_id = ?
+                """,
+                (str(target_id), str(agent_id)),
+            ).fetchone()
+            if binding is None:
+                raise StorageNotFoundError("target and agent binding does not exist")
+
+            existing_rows = connection.execute(
+                """
+                SELECT * FROM validation_jobs
+                WHERE target_id = ? AND assigned_agent_id = ? AND status = ?
+                ORDER BY created_at, validation_job_id LIMIT ?
+                """,
+                (
+                    str(target_id),
+                    str(agent_id),
+                    JobStatus.DISPATCHED.value,
+                    limit,
+                ),
+            ).fetchall()
+            existing = [
+                self._stored_validation_job_from_row(connection, row)
+                for row in existing_rows
+            ]
+            if any(
+                stored.job.target_id != target_id
+                or stored.assigned_agent_id != agent_id
+                for stored in existing
+            ):
+                raise StorageConflictError(
+                    "stored validation job does not belong to the polling Agent"
+                )
+
+            remaining = limit - len(existing)
+            pending: list[StoredValidationJob] = []
+            if remaining > 0:
+                pending_rows = connection.execute(
+                    """
+                    SELECT * FROM validation_jobs
+                    WHERE target_id = ? AND status = ?
+                    ORDER BY created_at, validation_job_id LIMIT ?
+                    """,
+                    (str(target_id), JobStatus.PENDING.value, remaining),
+                ).fetchall()
+
+                # Strict model and source-lineage validation happen before the
+                # first state transition.  Any failure aborts the transaction.
+                pending = [
+                    self._stored_validation_job_from_row(connection, row)
+                    for row in pending_rows
+                ]
+                if any(
+                    stored.job.target_id != target_id
+                    or stored.assigned_agent_id is not None
+                    for stored in pending
+                ):
+                    raise StorageConflictError(
+                        "pending validation job has an invalid target assignment"
+                    )
+                if any(
+                    dispatched_at < stored.job.created_at for stored in pending
+                ):
+                    raise StorageConflictError(
+                        "dispatch time precedes validation job creation"
+                    )
+
+                claimed: list[StoredValidationJob] = []
+                for stored in pending:
+                    cursor = connection.execute(
+                        """
+                        UPDATE validation_jobs
+                        SET status = ?, assigned_agent_id = ?, dispatched_at = ?
+                        WHERE validation_job_id = ? AND target_id = ?
+                          AND status = ? AND assigned_agent_id IS NULL
+                          AND dispatched_at IS NULL
+                        """,
+                        (
+                            JobStatus.DISPATCHED.value,
+                            str(agent_id),
+                            dispatched_at.isoformat(),
+                            str(stored.job.validation_job_id),
+                            str(target_id),
+                            JobStatus.PENDING.value,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise StorageConflictError(
+                            "validation job changed while it was being dispatched"
+                        )
+                    claimed_row = connection.execute(
+                        """
+                        SELECT * FROM validation_jobs
+                        WHERE validation_job_id = ?
+                        """,
+                        (str(stored.job.validation_job_id),),
+                    ).fetchone()
+                    if claimed_row is None:
+                        raise StorageNotFoundError(
+                            "claimed validation job does not exist"
+                        )
+                    claimed_job = self._stored_validation_job_from_row(
+                        connection, claimed_row
+                    )
+                    if (
+                        claimed_job.job.target_id != target_id
+                        or claimed_job.assigned_agent_id != agent_id
+                    ):
+                        raise StorageConflictError(
+                            "claimed validation job has an invalid Agent binding"
+                        )
+                    claimed.append(claimed_job)
+                pending = claimed
+
+        return [stored.job for stored in [*existing, *pending]]
 
     def store_profile(self, record: ProfileRecord, payload_json: str) -> ProfileRecord:
         with self._connection() as connection, connection:
@@ -1130,3 +1623,564 @@ class SQLiteControllerRepository:
             )
             records.append(stored_report.record)
         return records
+
+    @staticmethod
+    def _validation_job_authorization_matches(
+        existing: ValidationJobRecord,
+        requested: ValidationJobRecord,
+    ) -> bool:
+        """Compare only the admin-supplied authorization behind an idempotent retry."""
+
+        return (
+            existing.request_id == requested.request_id
+            and existing.target_id == requested.target_id
+            and existing.profile_id == requested.profile_id
+            and existing.compatibility_report_id
+            == requested.compatibility_report_id
+            and existing.control_id == requested.control_id
+            and existing.validation_mode is requested.validation_mode
+            and existing.execution_mode is requested.execution_mode
+            and existing.administrator_approval_acknowledged
+            is requested.administrator_approval_acknowledged
+            and existing.compatibility_risk_acknowledged
+            is requested.compatibility_risk_acknowledged
+            and existing.compatibility_override_reason
+            == requested.compatibility_override_reason
+            and existing.compatibility_reference
+            == requested.compatibility_reference
+        )
+
+    @staticmethod
+    def _compatibility_reference_from_json(
+        payload_json: str,
+    ) -> CompatibilityReference:
+        try:
+            if not isinstance(payload_json, str):
+                raise TypeError("compatibility reference must be text")
+            reference = CompatibilityReference.model_validate_json(payload_json)
+            canonical = _canonical_compatibility_reference_json(reference)
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored validation compatibility reference is invalid"
+            ) from error
+        if payload_json != canonical:
+            raise StorageConflictError(
+                "stored validation compatibility reference is not canonical"
+            )
+        return reference
+
+    @classmethod
+    def _validate_validation_job_lineage(
+        cls,
+        connection: sqlite3.Connection,
+        job: ValidationJobRecord,
+    ) -> None:
+        profile_row = connection.execute(
+            "SELECT * FROM profiles WHERE target_id = ? AND profile_id = ?",
+            (str(job.target_id), str(job.profile_id)),
+        ).fetchone()
+        if profile_row is None:
+            raise StorageNotFoundError("validation source profile does not exist")
+        stored_profile = cls._stored_profile_from_row(profile_row)
+
+        report_row = connection.execute(
+            """
+            SELECT * FROM compatibility_reports
+            WHERE target_id = ? AND profile_id = ?
+              AND compatibility_report_id = ?
+            """,
+            (
+                str(job.target_id),
+                str(job.profile_id),
+                str(job.compatibility_report_id),
+            ),
+        ).fetchone()
+        if report_row is None:
+            raise StorageNotFoundError(
+                "validation compatibility report does not exist"
+            )
+        stored_report = cls._stored_compatibility_report_from_row(report_row)
+        cls._validate_compatibility_report_lineage(stored_report, stored_profile)
+        try:
+            expected_reference = compatibility_reference_from_record(
+                stored_report.record,
+                job.control_id,
+            )
+        except ValueError as error:
+            raise StorageConflictError(
+                "validation job is not supported by its compatibility report"
+            ) from error
+        if job.compatibility_reference != expected_reference:
+            raise StorageConflictError(
+                "validation job changed its compatibility evidence"
+            )
+        if job.created_at < stored_report.record.generated_at:
+            raise StorageConflictError(
+                "validation job predates its compatibility report"
+            )
+
+    @classmethod
+    def _stored_validation_job_from_row(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> StoredValidationJob:
+        try:
+            approval = row["administrator_approval_acknowledged"]
+            risk_acknowledged = row["compatibility_risk_acknowledged"]
+            if approval not in (0, 1) or risk_acknowledged not in (0, 1):
+                raise ValueError(
+                    "stored validation acknowledgements must be SQLite booleans"
+                )
+            reference = cls._compatibility_reference_from_json(
+                row["compatibility_reference_json"]
+            )
+            job = ValidationJobRecord(
+                validation_job_id=_canonical_stored_uuid_text(
+                    row["validation_job_id"],
+                    "validation_job_id",
+                ),
+                request_id=_canonical_stored_uuid_text(
+                    row["request_id"],
+                    "request_id",
+                ),
+                target_id=_canonical_stored_uuid_text(
+                    row["target_id"],
+                    "validation target_id",
+                ),
+                profile_id=_canonical_stored_uuid_text(
+                    row["profile_id"],
+                    "validation profile_id",
+                ),
+                compatibility_report_id=_canonical_stored_uuid_text(
+                    row["compatibility_report_id"],
+                    "validation compatibility_report_id",
+                ),
+                job_type=JobType(row["job_type"]),
+                control_id=row["control_id"],
+                validation_mode=ValidationMode(row["validation_mode"]),
+                execution_mode=ExecutionMode(row["execution_mode"]),
+                administrator_approval_acknowledged=bool(
+                    approval
+                ),
+                compatibility_risk_acknowledged=bool(
+                    risk_acknowledged
+                ),
+                compatibility_override_reason=row[
+                    "compatibility_override_reason"
+                ],
+                compatibility_reference=reference,
+                status=JobStatus(row["status"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                dispatched_at=_parse_datetime(row["dispatched_at"]),
+                completed_at=_parse_datetime(row["completed_at"]),
+            )
+            assigned_agent_id = (
+                _canonical_stored_uuid_text(
+                    row["assigned_agent_id"],
+                    "validation assigned_agent_id",
+                )
+                if row["assigned_agent_id"] is not None
+                else None
+            )
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored validation job metadata is invalid"
+            ) from error
+        if (job.status is JobStatus.PENDING) != (assigned_agent_id is None):
+            raise StorageConflictError(
+                "stored validation job assignment does not match its state"
+            )
+        if assigned_agent_id is not None:
+            binding = connection.execute(
+                """
+                SELECT 1 FROM agents WHERE target_id = ? AND agent_id = ?
+                """,
+                (str(job.target_id), str(assigned_agent_id)),
+            ).fetchone()
+            if binding is None:
+                raise StorageConflictError(
+                    "stored validation job Agent binding is cross-target or missing"
+                )
+        try:
+            cls._validate_validation_job_lineage(connection, job)
+        except StorageNotFoundError as error:
+            raise StorageConflictError(
+                "stored validation job lineage is missing"
+            ) from error
+        return StoredValidationJob(
+            job=job,
+            assigned_agent_id=assigned_agent_id,
+        )
+
+    def create_validation_job(
+        self,
+        job: ValidationJobRecord,
+    ) -> ValidationJobRecord:
+        if job.status is not JobStatus.PENDING:
+            raise StorageConflictError("a new validation job must be pending")
+        reference_json = _canonical_compatibility_reference_json(
+            job.compatibility_reference
+        )
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            stored_request_id_rows = connection.execute(
+                "SELECT request_id FROM validation_jobs"
+            ).fetchall()
+
+            for stored_request_id_row in stored_request_id_rows:
+                _canonical_stored_uuid_text(
+                    stored_request_id_row["request_id"],
+                    "request_id",
+                )
+
+            existing_row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE request_id = ?",
+                (str(job.request_id),),
+            ).fetchone()
+            if existing_row is not None:
+                existing = self._stored_validation_job_from_row(
+                    connection, existing_row
+                ).job
+                if not self._validation_job_authorization_matches(existing, job):
+                    raise StorageConflictError(
+                        "validation request ID conflicts with another authorization"
+                    )
+                return existing
+
+            if connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?",
+                (str(job.validation_job_id),),
+            ).fetchone() is not None:
+                raise StorageConflictError("controller job ID already exists")
+            self._validate_validation_job_lineage(connection, job)
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO validation_jobs (
+                        validation_job_id, request_id, target_id, profile_id,
+                        compatibility_report_id, assigned_agent_id, job_type,
+                        control_id, validation_mode, execution_mode,
+                        administrator_approval_acknowledged,
+                        compatibility_risk_acknowledged,
+                        compatibility_override_reason,
+                        compatibility_reference_json, status, created_at,
+                        dispatched_at, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        str(job.validation_job_id),
+                        str(job.request_id),
+                        str(job.target_id),
+                        str(job.profile_id),
+                        str(job.compatibility_report_id),
+                        job.job_type.value,
+                        job.control_id,
+                        job.validation_mode.value,
+                        job.execution_mode.value,
+                        int(job.administrator_approval_acknowledged),
+                        int(job.compatibility_risk_acknowledged),
+                        job.compatibility_override_reason,
+                        reference_json,
+                        job.status.value,
+                        job.created_at.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError(
+                    "validation job ID, request ID, or lineage conflicts"
+                ) from error
+        return job
+
+    def get_validation_job(
+        self,
+        validation_job_id: UUID,
+    ) -> StoredValidationJob | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+                (str(validation_job_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._stored_validation_job_from_row(connection, row)
+
+    @staticmethod
+    def _validate_validation_result_payload(
+        record: ValidationResultRecord,
+        payload_json: str,
+    ) -> str:
+        try:
+            if not isinstance(payload_json, str):
+                raise TypeError("validation result payload must be text")
+            payload = ValidationResultPayload.model_validate_json(payload_json)
+            canonical = canonical_validation_payload_json(payload)
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored validation payload is not valid M5 evidence"
+            ) from error
+        if payload_json != canonical:
+            raise StorageConflictError("stored validation payload is not canonical")
+        if payload != record.payload:
+            raise StorageConflictError(
+                "stored validation payload does not match its record"
+            )
+        if _sha256(canonical) != record.result_sha256:
+            raise StorageConflictError(
+                "stored validation payload does not match its authoritative hash"
+            )
+        return canonical
+
+    @staticmethod
+    def _require_result_matches_stored_job(
+        record: ValidationResultRecord,
+        stored_job: StoredValidationJob,
+        *,
+        completed: bool,
+    ) -> None:
+        job = stored_job.job
+        if stored_job.assigned_agent_id != record.agent_id:
+            raise StorageConflictError(
+                "validation result Agent does not match the dispatched job"
+            )
+        if record.created_at != job.created_at or record.dispatched_at != job.dispatched_at:
+            raise StorageConflictError(
+                "validation result lifecycle does not match the dispatched job"
+            )
+        if completed:
+            if (
+                job.status is not JobStatus.COMPLETED
+                or job.completed_at != record.completed_at
+            ):
+                raise StorageConflictError(
+                    "validation result does not match the completed job"
+                )
+        elif job.status is not JobStatus.DISPATCHED:
+            raise StorageConflictError(
+                "validation job is not awaiting a result"
+            )
+        try:
+            require_payload_matches_job(record.payload, job)
+        except ValueError as error:
+            raise StorageConflictError(
+                "validation result lineage does not match its job"
+            ) from error
+
+    @classmethod
+    def _stored_validation_result_from_row(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> tuple[ValidationResultRecord, str]:
+        try:
+            payload = ValidationResultPayload.model_validate_json(
+                row["payload_json"]
+            )
+            record = ValidationResultRecord(
+                validation_result_id=UUID(row["validation_result_id"]),
+                agent_id=UUID(row["agent_id"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                dispatched_at=datetime.fromisoformat(row["dispatched_at"]),
+                completed_at=datetime.fromisoformat(row["completed_at"]),
+                result_sha256=row["result_sha256"],
+                payload=payload,
+            )
+            canonical = cls._validate_validation_result_payload(
+                record, row["payload_json"]
+            )
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored validation result metadata is invalid"
+            ) from error
+        if (
+            row["target_id"] != str(payload.target_id)
+            or row["profile_id"] != str(payload.profile_id)
+            or row["compatibility_report_id"]
+            != str(payload.compatibility_report_id)
+            or row["validation_job_id"] != str(payload.validation_job_id)
+            or row["control_id"] != payload.control_id
+            or row["validation_mode"] != payload.validation_mode.value
+            or row["execution_mode"] != payload.execution_mode.value
+        ):
+            raise StorageConflictError(
+                "stored validation result columns do not match its payload"
+            )
+        job_row = connection.execute(
+            "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+            (row["validation_job_id"],),
+        ).fetchone()
+        if job_row is None:
+            raise StorageConflictError(
+                "stored validation result job does not exist"
+            )
+        stored_job = cls._stored_validation_job_from_row(connection, job_row)
+        cls._require_result_matches_stored_job(
+            record,
+            stored_job,
+            completed=True,
+        )
+        return record, canonical
+
+    def store_validation_result(
+        self,
+        record: ValidationResultRecord,
+        payload_json: str,
+    ) -> ValidationResultRecord:
+        canonical = self._validate_validation_result_payload(record, payload_json)
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job_row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+                (str(record.payload.validation_job_id),),
+            ).fetchone()
+            if job_row is None:
+                raise StorageNotFoundError("validation job does not exist")
+            stored_job = self._stored_validation_job_from_row(connection, job_row)
+
+            existing_row = connection.execute(
+                "SELECT * FROM validation_results WHERE validation_job_id = ?",
+                (str(record.payload.validation_job_id),),
+            ).fetchone()
+            if existing_row is not None:
+                existing, existing_canonical = self._stored_validation_result_from_row(
+                    connection,
+                    existing_row,
+                )
+                if (
+                    existing.agent_id != record.agent_id
+                    or existing.result_sha256 != record.result_sha256
+                    or existing_canonical != canonical
+                ):
+                    raise StorageConflictError(
+                        "validation job already has different result evidence"
+                    )
+                return existing
+
+            self._require_result_matches_stored_job(
+                record,
+                stored_job,
+                completed=False,
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO validation_results (
+                        validation_result_id, validation_job_id, target_id,
+                        profile_id, compatibility_report_id, agent_id,
+                        control_id, validation_mode, execution_mode, created_at,
+                        dispatched_at, completed_at, result_sha256, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(record.validation_result_id),
+                        str(record.payload.validation_job_id),
+                        str(record.payload.target_id),
+                        str(record.payload.profile_id),
+                        str(record.payload.compatibility_report_id),
+                        str(record.agent_id),
+                        record.payload.control_id,
+                        record.payload.validation_mode.value,
+                        record.payload.execution_mode.value,
+                        record.created_at.isoformat(),
+                        record.dispatched_at.isoformat(),
+                        record.completed_at.isoformat(),
+                        record.result_sha256,
+                        canonical,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE validation_jobs
+                    SET status = ?, completed_at = ?
+                    WHERE validation_job_id = ? AND target_id = ?
+                      AND assigned_agent_id = ? AND status = ?
+                    """,
+                    (
+                        JobStatus.COMPLETED.value,
+                        record.completed_at.isoformat(),
+                        str(record.payload.validation_job_id),
+                        str(record.payload.target_id),
+                        str(record.agent_id),
+                        JobStatus.DISPATCHED.value,
+                    ),
+                )
+                if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise StorageConflictError(
+                        "validation job changed while its result was stored"
+                    )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError(
+                    "validation result ID or lineage conflicts"
+                ) from error
+        return record
+
+    def get_validation_result_for_job(
+        self,
+        validation_job_id: UUID,
+    ) -> ValidationResultRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM validation_results WHERE validation_job_id = ?",
+                (str(validation_job_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._stored_validation_result_from_row(connection, row)[0]
+
+    def get_validation_result(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        validation_result_id: UUID,
+    ) -> ValidationResultRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM validation_results
+                WHERE target_id = ? AND profile_id = ?
+                  AND compatibility_report_id = ?
+                  AND validation_result_id = ?
+                """,
+                (
+                    str(target_id),
+                    str(profile_id),
+                    str(compatibility_report_id),
+                    str(validation_result_id),
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._stored_validation_result_from_row(connection, row)[0]
+
+    def list_validation_results(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[ValidationResultRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM validation_results
+                WHERE target_id = ? AND profile_id = ?
+                  AND compatibility_report_id = ?
+                ORDER BY completed_at, validation_result_id
+                """,
+                (
+                    str(target_id),
+                    str(profile_id),
+                    str(compatibility_report_id),
+                ),
+            ).fetchall()
+            return [
+                self._stored_validation_result_from_row(connection, row)[0]
+                for row in rows
+            ]

@@ -9,7 +9,7 @@ identity.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import (
@@ -24,6 +24,11 @@ from pydantic import (
 )
 
 from src.compatibility_engine.models import CompatibilityReport
+from src.sandbox_validator.models import (
+    CompatibilityReference,
+    ExecutionMode,
+    ValidationReport,
+)
 from src.target_profiler.models import TargetProfile
 
 
@@ -79,9 +84,10 @@ class ObservedTargetMetadata(StrictControllerModel):
     )
 
 class JobType(StrEnum):
-    """Closed M6A operational job vocabulary."""
+    """Closed SENTRA operational job vocabulary."""
 
     PROFILE_TARGET = "PROFILE_TARGET"
+    VALIDATE_CONTROL = "VALIDATE_CONTROL"
 
 
 class JobStatus(StrEnum):
@@ -93,6 +99,12 @@ class JobStatus(StrEnum):
 class TargetStatus(StrEnum):
     ENROLLED = "enrolled"
     ONLINE = "online"
+
+
+class ValidationMode(StrEnum):
+    """M6D can orchestrate validation only inside an acknowledged sandbox."""
+
+    SANDBOX = "sandbox"
 
 
 class EnrollmentRequest(StrictControllerModel):
@@ -133,13 +145,13 @@ class HeartbeatResponse(StrictControllerModel):
 
 class JobCreateRequest(StrictControllerModel):
     target_id: UUID
-    job_type: JobType
+    job_type: Literal[JobType.PROFILE_TARGET] = JobType.PROFILE_TARGET
 
 
 class JobRecord(StrictControllerModel):
     job_id: UUID
     target_id: UUID
-    job_type: JobType
+    job_type: Literal[JobType.PROFILE_TARGET] = JobType.PROFILE_TARGET
     status: JobStatus
     created_at: AwareDatetime
     dispatched_at: AwareDatetime | None = None
@@ -171,19 +183,141 @@ class JobRecord(StrictControllerModel):
         return self
 
 
+class ValidationJobCreateRequest(StrictControllerModel):
+    """Explicit administrator request for the sole initial M6D experiment.
+
+    The request deliberately has no generic payload, path, command, argv,
+    service, file target, or adapter selector.  ``request_id`` is supplied by
+    the administrator so a lost HTTP response cannot create a second mutation
+    job when the same request is retried.
+    """
+
+    request_id: UUID
+    target_id: UUID
+    profile_id: UUID
+    compatibility_report_id: UUID
+    control_id: Literal["7.1.1"]
+    validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
+    execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
+    administrator_approval_acknowledged: Literal[True]
+    compatibility_risk_acknowledged: bool = False
+    compatibility_override_reason: NonEmptyString | None = None
+
+
+class ValidationJobRecord(StrictControllerModel):
+    """A Controller-derived, allowlisted M6D job delivered to one Agent."""
+
+    validation_job_id: UUID
+    request_id: UUID
+    target_id: UUID
+    profile_id: UUID
+    compatibility_report_id: UUID
+    job_type: Literal[JobType.VALIDATE_CONTROL] = JobType.VALIDATE_CONTROL
+    control_id: Literal["7.1.1"]
+    validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
+    execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
+    administrator_approval_acknowledged: Literal[True]
+    compatibility_risk_acknowledged: bool = False
+    compatibility_override_reason: NonEmptyString | None = None
+    compatibility_reference: CompatibilityReference
+    status: JobStatus
+    created_at: AwareDatetime
+    dispatched_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def validate_job(self) -> "ValidationJobRecord":
+        _validate_job_lifecycle(
+            status=self.status,
+            created_at=self.created_at,
+            dispatched_at=self.dispatched_at,
+            completed_at=self.completed_at,
+        )
+        reference = self.compatibility_reference
+        if reference.control_id != self.control_id:
+            raise ValueError("validation job control does not match M4 evidence")
+        if reference.report_source != (
+            "controller-stored-compatibility-report:"
+            f"{self.compatibility_report_id}"
+        ):
+            raise ValueError("validation job report source does not match lineage")
+        if reference.profile_source != f"controller-stored-profile:{self.profile_id}":
+            raise ValueError("validation job profile source does not match lineage")
+        uncertain = {
+            "warning",
+            "review_required",
+            "insufficient_evidence",
+        }
+        if (
+            reference.result.value in uncertain
+            and not self.compatibility_risk_acknowledged
+        ):
+            raise ValueError(
+                "uncertain compatibility evidence requires risk acknowledgement"
+            )
+        if (
+            reference.result.value == "insufficient_evidence"
+            and self.compatibility_override_reason is None
+        ):
+            raise ValueError(
+                "insufficient evidence requires a recorded override reason"
+            )
+        return self
+
+
+def _validate_job_lifecycle(
+    *,
+    status: JobStatus,
+    created_at: AwareDatetime,
+    dispatched_at: AwareDatetime | None,
+    completed_at: AwareDatetime | None,
+) -> None:
+    if status is JobStatus.PENDING:
+        if dispatched_at is not None or completed_at is not None:
+            raise ValueError("a pending job cannot have dispatch/completion times")
+    elif status is JobStatus.DISPATCHED:
+        if dispatched_at is None or completed_at is not None:
+            raise ValueError(
+                "a dispatched job requires dispatched_at and no completed_at"
+            )
+    elif dispatched_at is None or completed_at is None:
+        raise ValueError("a completed job requires dispatched_at and completed_at")
+    if dispatched_at is not None and dispatched_at < created_at:
+        raise ValueError("dispatched_at cannot precede created_at")
+    if (
+        completed_at is not None
+        and dispatched_at is not None
+        and completed_at < dispatched_at
+    ):
+        raise ValueError("completed_at cannot precede dispatched_at")
+
+
 class JobPollRequest(StrictControllerModel):
     auth: AgentAuth
 
 
+AgentJobRecord: TypeAlias = Annotated[
+    JobRecord | ValidationJobRecord,
+    Field(discriminator="job_type"),
+]
+
+
 class JobPollResponse(StrictControllerModel):
-    jobs: list[JobRecord]
+    jobs: list[AgentJobRecord]
 
     @field_validator("jobs")
     @classmethod
-    def reject_duplicate_jobs(cls, jobs: list[JobRecord]) -> list[JobRecord]:
-        job_ids = [job.job_id for job in jobs]
+    def reject_duplicate_jobs(
+        cls, jobs: list[AgentJobRecord]
+    ) -> list[AgentJobRecord]:
+        job_ids = [
+            job.job_id
+            if isinstance(job, JobRecord)
+            else job.validation_job_id
+            for job in jobs
+        ]
         if len(job_ids) != len(set(job_ids)):
-            raise ValueError("jobs must have unique job_id values")
+            raise ValueError("jobs must have unique Controller job IDs")
         return jobs
 
 
@@ -248,6 +382,68 @@ class CompatibilityReportRecord(StrictControllerModel):
         return self
 
 
+class ValidationResultPayload(StrictControllerModel):
+    """Canonical Agent-produced evidence bound to one M6D job."""
+
+    target_id: UUID
+    profile_id: UUID
+    compatibility_report_id: UUID
+    validation_job_id: UUID
+    control_id: Literal["7.1.1"]
+    validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
+    execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
+    report: ValidationReport
+
+    @model_validator(mode="after")
+    def validate_m5_payload(self) -> "ValidationResultPayload":
+        report = self.report
+        if report.mode is not self.execution_mode:
+            raise ValueError("M5 report execution mode does not match the job")
+        if len(report.control_results) != 1:
+            raise ValueError("an M6D result must contain exactly one control")
+        control = report.control_results[0]
+        if control.control_id != self.control_id:
+            raise ValueError("M5 result control does not match the job")
+        reference = control.m4_input
+        if reference is None:
+            raise ValueError("M6D result must retain its M4 compatibility input")
+        if reference.report_source != (
+            "controller-stored-compatibility-report:"
+            f"{self.compatibility_report_id}"
+        ):
+            raise ValueError("M5 result report source does not match lineage")
+        if reference.profile_source != f"controller-stored-profile:{self.profile_id}":
+            raise ValueError("M5 result profile source does not match lineage")
+        return self
+
+
+class ValidationResultSubmissionRequest(StrictControllerModel):
+    auth: AgentAuth
+    payload: ValidationResultPayload
+
+
+class ValidationResultRecord(StrictControllerModel):
+    """Controller-owned M6D result identifier, timestamps, hash, and payload."""
+
+    validation_result_id: UUID
+    agent_id: UUID
+    created_at: AwareDatetime
+    dispatched_at: AwareDatetime
+    completed_at: AwareDatetime
+    result_sha256: Sha256Hex
+    payload: ValidationResultPayload
+
+    @model_validator(mode="after")
+    def validate_timeline(self) -> "ValidationResultRecord":
+        _validate_job_lifecycle(
+            status=JobStatus.COMPLETED,
+            created_at=self.created_at,
+            dispatched_at=self.dispatched_at,
+            completed_at=self.completed_at,
+        )
+        return self
+
+
 class TargetRecord(StrictControllerModel):
     target_id: UUID
     agent_id: UUID
@@ -284,6 +480,7 @@ class MetadataChangeRecord(StrictControllerModel):
 
 __all__ = [
     "AdminAuth",
+    "AgentJobRecord",
     "AgentAuth",
     "CompatibilityAnalysisRequest",
     "CompatibilityReportRecord",
@@ -304,4 +501,10 @@ __all__ = [
     "StrictControllerModel",
     "TargetRecord",
     "TargetStatus",
+    "ValidationJobCreateRequest",
+    "ValidationJobRecord",
+    "ValidationMode",
+    "ValidationResultPayload",
+    "ValidationResultRecord",
+    "ValidationResultSubmissionRequest",
 ]

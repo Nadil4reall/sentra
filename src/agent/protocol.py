@@ -20,6 +20,8 @@ from src.controller.models import (
     JobPollRequest,
     ObservedTargetMetadata,
     ProfileSubmissionRequest,
+    ValidationResultPayload,
+    ValidationResultSubmissionRequest,
 )
 from src.target_profiler.models import TargetProfile
 
@@ -114,6 +116,22 @@ class AgentProtocol:
             profile=profile,
             profiler_version=profiler_version,
             sentra_version=sentra_version,
+        )
+
+    def create_validation_result_submission_request(
+        self,
+        payload: ValidationResultPayload,
+    ) -> ValidationResultSubmissionRequest:
+        """Bind one already-journaled M5 result to this Agent credential."""
+
+        state = self._state
+        if state.target_id is None or payload.target_id != state.target_id:
+            raise AgentNotEnrolledError(
+                "validation result target does not match this Agent"
+            )
+        return ValidationResultSubmissionRequest(
+            auth=self._auth(),
+            payload=payload,
         )
 
     def _auth(self) -> AgentAuth:

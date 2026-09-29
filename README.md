@@ -10,15 +10,17 @@ runs tightly bounded control experiments in an acknowledged Ubuntu sandbox.
 **Milestones 1–5 are implemented at PoC scope, the initial three-control M5 sandbox
 validation scope is complete, M6A provides the Controller/Agent protocol and storage
 core, M6B implements its TLS-only HTTPS transport and one-cycle M3 Agent, and M6C runs
-the existing M4 engine against validated Controller-stored profiles.** SENTRA is not a
-production hardening platform, a CIS compliance scanner, or a claim of complete CIS
-enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is limited to
-explicit adapters and approval gates; its two controlled executions and one deliberately
-non-mutating audit/plan are documented below. M6B/M6C add no remediation or arbitrary
-remote-command capability. M6B's scoped Mac-to-Ubuntu profiling workflow has completed
-real-lab validation, and M6C has completed a real Controller-stored-profile lab using a
-protected copy of that M6B evidence. This does not imply production readiness or
-completion of all M6 work.
+the existing M4 engine against validated Controller-stored profiles. M6D adds an
+administrator-authorized, target-isolated path from one stored M4 result to the fixed
+M5 `7.1.1` sandbox adapter and back to Controller-stored validation evidence.** SENTRA
+is not a production hardening platform, a CIS compliance scanner, or a claim of complete
+CIS enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is limited
+to explicit adapters and approval gates; its two controlled executions and one
+deliberately non-mutating audit/plan are documented below. M6B/M6C add no remediation
+or arbitrary remote-command capability. M6D adds only constrained sandbox validation,
+not production deployment or generic execution. The scoped M6B, M6C, and M6D workflows
+have completed their recorded real-lab validations. This does not imply production
+readiness or completion of all M6 work.
 
 ## The research story
 
@@ -38,6 +40,8 @@ M6A How are Agent identity, jobs, storage, and lineage bound? PROTOCOL CORE
 M6B Can one TLS-verified Agent run M3 and submit evidence?    SCOPED LAB VALIDATED
                 ↓
 M6C Can the Controller run existing M4 on that evidence?     STORED-PROFILE LAB VALIDATED
+                ↓
+M6D Can it authorize one constrained sandbox validation?     7.1.1 LAB VALIDATED
 ```
 
 ## Project status
@@ -52,7 +56,8 @@ M6C Can the Controller run existing M4 on that evidence?     STORED-PROFILE LAB 
 | M6A — controller/agent core | Identity, enrollment, heartbeat, target-isolated profile jobs, persistence, and evidence lineage | ✅ Implemented and committed |
 | M6B — HTTPS + M3 Agent | TLS-only Controller/Agent transport and deterministic local `PROFILE_TARGET` cycle | ✅ Scoped real-lab validation complete; not production-ready |
 | M6C — Controller-side M4 | Admin-only analysis of validated stored profiles with canonical report persistence and lineage | ✅ Implemented, automated-test validated, and real stored-profile lab validated; not production-ready |
-| M6D–M8 | Deployment/approval, sandbox manager, dashboard/audit trail | Planned |
+| M6D — constrained M5 orchestration | Admin-authorized, target-isolated, journaled `7.1.1` sandbox validation with strict result lineage | ✅ Implemented, automated-test validated, and scoped real-lab validated; not production-ready |
+| Later M6 work / M7–M8 | Automated sandbox lifecycle, broader orchestration, production deployment boundaries, dashboard/audit trail | Planned |
 
 ### Verified results at a glance
 
@@ -69,20 +74,22 @@ M6C Can the Controller run existing M4 on that evidence?     STORED-PROFILE LAB 
 | M5 real sandbox experiments | 3: `7.1.1` validated; `5.1.20` warning; `4.2.3` intentionally `not_tested` |
 | M5 automated tests | 122 passed |
 | Full M1–M5 suite | 309 passed, 0 failed |
-| M6 boundary | Agent-initiated HTTPS; `PROFILE_TARGET` is the only operational job type |
+| M6 boundary | Agent-initiated HTTPS; `PROFILE_TARGET` plus constrained `VALIDATE_CONTROL` for sandbox/execute control `7.1.1` only |
 | M6B real-lab workflow | Development-CA-verified HTTPS; one enrollment reused; one `PROFILE_TARGET` job/profile completed |
 | M6C real-lab workflow | Protected M6B database copy; admin POST/list/item retrieval matched; SQL lineage `MATCH` |
-| Focused M6/M4 validation | 123 passed |
-| M6 automated tests | 100 passed |
-| Full regression suite after M6C | 412 passed, 0 failed; 5 existing warnings |
+| M6D real-lab workflow | VM2 received no VM1 job; unprivileged run safely `not_tested`; privileged run `validated` with no metadata change required |
+| Focused M6/M5 validation | 253 passed |
+| Full regression suite after M6D | 443 passed, 0 failed; 5 existing warnings |
 
 Automated tests establish software behavior. The recorded experiments now include
 normal and elevated M4 reports from one target, three initial M5 sandbox reports, and
 one operator-observed M6B Mac-to-Ubuntu profiling workflow. A separate M6C lab reused a
 protected copy of that Controller database and verified central M4 analysis, report
-persistence, retrieval, and SQL lineage for the stored real profile. Automated results
-and operator observations are separate evidence sources; none is universal Ubuntu or
-production validation.
+persistence, retrieval, and SQL lineage for the stored real profile. The M6D lab then
+tested target isolation, privilege refusal, journal ownership, and the fixed `7.1.1`
+sandbox-validation path. Its `validated` result describes the M5 empirical procedure,
+not CIS compliance. Automated results and operator observations are separate evidence
+sources; none is universal Ubuntu or production validation.
 
 ## Main architecture
 
@@ -116,7 +123,8 @@ Licensed CIS benchmark
           pre-audit → candidate → post-audit → health/rollback
 ```
 
-M6A–M6C add a centralization boundary without changing those layers:
+M6A–M6D add a centralization and constrained validation boundary without changing the
+existing M3, M4, or M5 engines:
 
 ```text
 Ubuntu Agent -- outbound CA-verified HTTPS /api/v1 --> Controller
@@ -128,18 +136,31 @@ Ubuntu Agent -- outbound CA-verified HTTPS /api/v1 --> Controller
                                                 existing M4 engine (read-only)
                                                             |
                                              canonical compatibility report
+                                                            |
+                                              explicit administrator authorization
+                                                            |
+     +-- fixed M5 7.1.1 adapter <--- VALIDATE_CONTROL via outbound Agent poll
+     |      |
+     |      +-- fail-closed local validation journal with trusted-ancestor enforcement
+     |      |
+     +------ HTTPS strict result submission ----------------+
+                                                            |
+                                        validation + canonical hash + persistence
 ```
 
 `target_id` and `agent_id` are opaque Controller-issued identities.
 `installation_id` is generated and persisted locally by the Agent. Observed host
 metadata is non-authoritative, and current Mac/VM addresses, hostnames, and usernames
 are lab details only. The Controller does not SSH into targets, and the protocol has no
-generic command, shell, remediation, or deployment job. See
+generic command, shell, or production-deployment job. M6D exposes only the fixed
+`7.1.1` sandbox-validation job; it cannot carry arbitrary execution text. See
 [`docs/m6a-architecture.md`](docs/m6a-architecture.md) for the committed protocol core
 and [`docs/m6b-architecture.md`](docs/m6b-architecture.md) for the HTTPS transport,
 one-cycle Agent, configuration, lab procedure, and remaining limitations. The separate
 M6C Controller-side design and stored-profile lab record are in
-[`docs/m6c-architecture.md`](docs/m6c-architecture.md).
+[`docs/m6c-architecture.md`](docs/m6c-architecture.md). M6D's authorization, journal,
+result lineage, real-lab evidence, and remaining limits are documented in
+[`docs/m6d-architecture.md`](docs/m6d-architecture.md).
 
 ## Milestone 1 — CIS benchmark ingestion
 
@@ -607,7 +628,14 @@ remain future work.
 - the M6C admin-only Controller adapter that revalidates stored M3 evidence, invokes
   the existing ten-control M4 engine, and stores canonical compatibility reports with
   `target_id → profile_id → compatibility_report_id` lineage and Controller-computed
-  hashes, exercised against a protected copy of the real M6B Controller database.
+  hashes, exercised against a protected copy of the real M6B Controller database; and
+- the M6D constrained validation path from an explicit administrator authorization to
+  one target-isolated `VALIDATE_CONTROL` job, the fixed in-process M5 `7.1.1` adapter,
+  a fail-closed local journal with trusted-ancestor enforcement, and strict Controller result storage with
+  `target_id → profile_id → compatibility_report_id → validation_job_id →
+  validation_result_id` lineage. The scoped real lab exercised cross-target isolation,
+  unprivileged refusal, journal ownership enforcement, and privileged no-change
+  validation.
 
 ### Not implemented
 
@@ -615,8 +643,10 @@ remain future work.
 - arbitrary CIS Audit or Remediation execution;
 - automatic deployment or post-deployment verification;
 - production certificate lifecycle automation and broader M6 deployment validation;
-  and
-- deployment/approval workflows, sandbox manager, production database, or dashboard.
+- broader Controller-side validation orchestration, automated sandbox creation,
+  cloning, snapshotting, and disposal;
+- production database or deployment workflow; and
+- dashboard or other user interface.
 
 ### Limitations
 
@@ -649,6 +679,14 @@ remain future work.
   production concurrency model, remediation/deployment step, M5 orchestration, or UI.
   Its real-lab evidence covers one protected database copy, one stored profile, one
   generated report, and one lab-only certificate chain.
+- M6D permits only `7.1.1`; existing M5 controls `5.1.20` and `4.2.3` remain
+  unreachable through this path. It dispatches at most one validation job per Agent
+  cycle and uses operator-managed dedicated-VM isolation rather than automated sandbox
+  provisioning. SQLite, bearer credentials without hardware attestation, reasonable
+  clock synchronization, manual inspection of interrupted `STARTED` journal records,
+  and the lack of automatic acknowledgement-loss reconciliation remain PoC
+  limitations. M6D provides neither generic remote execution nor production
+  deployment.
 
 ## Data storage
 
@@ -659,7 +697,7 @@ remain future work.
 | M3 | `data/profiles/*.yaml` | Generated profiles ignored |
 | M4 | `data/compatibility/*.yaml` | Generated reports ignored; `.gitkeep` tracked |
 | M5 | `data/sandbox/*.yaml` | Generated sandbox reports ignored; `.gitkeep` tracked |
-| M6A–M6C | `data/controller/*`, `data/agent/*` | Generated databases, credentials, runtime state, and stored reports ignored; `.gitkeep` files tracked |
+| M6A–M6D | `data/controller/*`, `data/agent/*` | Generated databases, credentials, Agent identity, validation journals, runtime state, and stored reports ignored; `.gitkeep` files tracked |
 
 ## Project structure
 
@@ -676,7 +714,8 @@ data/
 docs/
 ├── m6a-architecture.md          M6A trust, protocol, storage, and lineage baseline
 ├── m6b-architecture.md          M6B completed lab record, reproduction, and limitations
-└── m6c-architecture.md          M6C design, stored-profile lab record, and limitations
+├── m6c-architecture.md          M6C design, stored-profile lab record, and limitations
+└── m6d-architecture.md          M6D constrained validation, real-lab record, and limits
 
 src/
 ├── pdf_extractor.py             M1 extraction
@@ -696,8 +735,8 @@ src/
     ├── validator.py             fail-stop orchestration
     ├── report.py                YAML output
     └── cli.py                   local plan/execute entry point
-├── controller/                  M6 protocol/service/storage + HTTPS + M4 adapter
-└── agent/                       persistent identity + HTTPS client + M3 one-cycle runtime
+├── controller/                  M6 protocol/service/storage + HTTPS + M4/M6D adapters
+└── agent/                       persistent identity + HTTPS client + M3/M5 one-cycle runtime
 
 tests/
 ├── test_compatibility_engine.py
@@ -736,6 +775,11 @@ and Ubuntu Agent procedure are in
 The M6C administrative API, persistence design, semantic boundaries, and completed
 stored-profile lab validation are documented in
 [`docs/m6c-architecture.md`](docs/m6c-architecture.md).
+
+The M6D closed job contract, independent local sandbox acknowledgement, trusted-ancestor-enforced fail-closed
+journal, result lineage, and completed `7.1.1` real-lab validation are documented in
+[`docs/m6d-architecture.md`](docs/m6d-architecture.md). That record is an experiment
+report, not a production deployment procedure.
 
 Generate an M3 profile locally on the Ubuntu 24.04 host:
 
@@ -801,15 +845,26 @@ not be redistributed as normal repository content.
 ## Next research step
 
 The initial M5 PoC validation scope, M6A protocol/storage core, M6B scoped TLS profiling
-workflow, and M6C Controller-side compatibility implementation are complete at their
-stated boundaries, including the scoped M6B and M6C real-lab validations. M6D–M8 remain
-future work; any deployment/approval workflow, sandbox manager, or dashboard must
-remain separate from M6C's non-mutating M4 adapter and must not introduce arbitrary
-remote execution.
+workflow, M6C Controller-side compatibility implementation, and M6D fixed `7.1.1`
+sandbox-validation path are complete at their stated boundaries, including their scoped
+real-lab validations. Broader control orchestration, automated sandbox creation,
+cloning, snapshotting and disposal, production deployment boundaries, and a dashboard
+remain future work. Those additions must preserve M4's non-mutating semantics, M5's
+local safety gates, and the absence of arbitrary remote execution.
 
 ## Research and licensing note
 
 Results are specific to the named CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0, the ten
 PoC enrichments, the implemented profiler and compatibility rules, and the recorded
-experiment. The CIS benchmark is licensed source material and is not distributed with
+experiments. The CIS benchmark is licensed source material and is not distributed with
 this project.
+
+
+M6D's local validation journal is fail-closed only within its enforced filesystem
+trust boundary: journal ancestors must be real directories with acceptable ownership
+and without unsafe group/other write permissions. A root Agent rejects a journal
+protected by an unprivileged-user-owned ancestor. Controller-to-Agent validation
+jobs contain no arbitrary command, shell, argv, script, filesystem target, service
+action, path, or adapter-selector fields. Returned M5 evidence may still contain
+observed action targets and backup paths because those are evidence, not remote
+execution parameters.

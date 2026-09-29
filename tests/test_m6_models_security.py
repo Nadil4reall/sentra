@@ -90,13 +90,21 @@ def test_unknown_or_command_like_job_types_are_rejected(job_type: str) -> None:
         JobCreateRequest(target_id=uuid4(), job_type=job_type)
 
 
-def test_only_profile_target_job_type_is_available() -> None:
-    assert list(JobType) == [JobType.PROFILE_TARGET]
+def test_only_narrow_profile_and_validation_job_types_are_available() -> None:
+    assert list(JobType) == [
+        JobType.PROFILE_TARGET,
+        JobType.VALIDATE_CONTROL,
+    ]
     request = JobCreateRequest(
         target_id=uuid4(),
         job_type=JobType.PROFILE_TARGET,
     )
     assert request.job_type is JobType.PROFILE_TARGET
+    with pytest.raises(ValidationError):
+        JobCreateRequest(
+            target_id=uuid4(),
+            job_type=JobType.VALIDATE_CONTROL,
+        )
 
 
 def test_aware_timestamps_are_required() -> None:
