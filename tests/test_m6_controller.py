@@ -240,6 +240,12 @@ def test_api_namespace_contains_only_narrow_controller_operations() -> None:
             "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
             "{sandbox_session_id}",
         ),
+        (
+            "POST",
+            "/api/v1/admin/targets/{target_id}/profiles/{profile_id}/"
+            "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
+            "{sandbox_session_id}/provision",
+        ),
     }
 
 
@@ -281,6 +287,7 @@ def test_controller_settings_redact_plain_strings_and_reject_noninteger_limits()
         "create_sandbox_session",
         "list_sandbox_sessions",
         "get_sandbox_session",
+        "provision_sandbox_session",
     }
 
 

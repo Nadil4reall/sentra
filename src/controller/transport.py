@@ -39,6 +39,7 @@ from src.controller.models import (
     JobCreateRequest,
     JobPollRequest,
     ProfileSubmissionRequest,
+    SandboxProvisionRequest,
     SandboxSessionCreateRequest,
     ValidationJobCreateRequest,
     ValidationResultSubmissionRequest,
@@ -80,6 +81,10 @@ _ADMIN_SANDBOX_SESSION_COLLECTION_ROUTE = re.compile(
 _ADMIN_SANDBOX_SESSION_ITEM_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
     r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)$"
+)
+_ADMIN_SANDBOX_PROVISION_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)/provision$"
 )
 _ADMIN_VALIDATION_RESULT_COLLECTION_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
@@ -297,9 +302,29 @@ class ControllerHTTPSApplication:
                 )
                 return _json_response(HTTPStatus.CREATED, _model_payload(job))
 
-            sandbox_item_match = _ADMIN_SANDBOX_SESSION_ITEM_ROUTE.fullmatch(
+            sandbox_provision_match = _ADMIN_SANDBOX_PROVISION_ROUTE.fullmatch(
                 path
             )
+            if sandbox_provision_match is not None:
+                if method != "POST":
+                    return self._method_not_allowed()
+                target_id = UUID(sandbox_provision_match.group(1))
+                profile_id = UUID(sandbox_provision_match.group(2))
+                report_id = UUID(sandbox_provision_match.group(3))
+                sandbox_session_id = UUID(sandbox_provision_match.group(4))
+                auth = self._admin_auth(normalized_headers)
+                request = SandboxProvisionRequest.model_validate_json(body)
+                session = self._api.provision_sandbox_session(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    sandbox_session_id,
+                    auth,
+                    request,
+                )
+                return _json_response(HTTPStatus.OK, _model_payload(session))
+
+            sandbox_item_match = _ADMIN_SANDBOX_SESSION_ITEM_ROUTE.fullmatch(path)
             if sandbox_item_match is not None:
                 if method != "GET":
                     return self._method_not_allowed()

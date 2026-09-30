@@ -765,6 +765,32 @@ class ControllerService:
         )
         return self._store_sandbox_transition(updated=updated)
 
+    def mark_provisioning_failed(
+        self,
+        sandbox_session_id: UUID,
+        *,
+        failure_reason: str,
+    ) -> SandboxSessionRecord:
+        """M6E-B race-safe failure from PROVISIONING only."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.FAILED,
+            completed_at=self._now(),
+            failure_reason=failure_reason,
+        )
+        try:
+            return self._repository.mark_provisioning_failed(updated)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError(
+                "sandbox session does not exist"
+            ) from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "sandbox provisioning failure conflicts with Controller state"
+            ) from error
+
     def mark_quarantined(
         self,
         sandbox_session_id: UUID,

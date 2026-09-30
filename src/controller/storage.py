@@ -263,6 +263,10 @@ class ControllerRepository(Protocol):
         self, session: SandboxSessionRecord
     ) -> SandboxSessionRecord: ...
 
+    def mark_provisioning_failed(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
     def mark_quarantined(
         self, session: SandboxSessionRecord
     ) -> SandboxSessionRecord: ...
@@ -3000,6 +3004,21 @@ class SQLiteControllerRepository:
                     SandboxSessionStatus.READY,
                     SandboxSessionStatus.VALIDATING,
                 }
+            ),
+            session=session,
+        )
+
+    def mark_provisioning_failed(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        """Race-safe M6E-B failure transition from PROVISIONING only."""
+
+        if session.status is not SandboxSessionStatus.FAILED:
+            raise StorageConflictError("sandbox transition must end in FAILED")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset(
+                {SandboxSessionStatus.PROVISIONING}
             ),
             session=session,
         )

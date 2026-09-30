@@ -23,6 +23,7 @@ from src.controller.models import (
     JobRecord,
     ProfileRecord,
     ProfileSubmissionRequest,
+    SandboxProvisionRequest,
     SandboxSessionCreateRequest,
     SandboxSessionRecord,
     TargetRecord,
@@ -31,6 +32,7 @@ from src.controller.models import (
     ValidationResultRecord,
     ValidationResultSubmissionRequest,
 )
+from src.controller.sandbox import SandboxManager
 from src.controller.service import AuthenticationError, ControllerService
 
 
@@ -119,6 +121,15 @@ ENDPOINTS = (
         "POST",
         (
             f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
+            "{sandbox_session_id}/provision"
+        ),
+        "provision_sandbox_session",
+    ),
+    Endpoint(
+        "POST",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
             "compatibility-reports/{compatibility_report_id}/validation-jobs"
         ),
         "create_validation_job",
@@ -146,8 +157,13 @@ ENDPOINTS = (
 class ControllerAPI:
     """Thin endpoint-shaped facade that adds path/body identity binding."""
 
-    def __init__(self, service: ControllerService) -> None:
+    def __init__(
+        self,
+        service: ControllerService,
+        sandbox_manager: SandboxManager | None = None,
+    ) -> None:
         self._service = service
+        self._sandbox_manager = sandbox_manager or SandboxManager(service, None)
 
     def enroll(self, request: EnrollmentRequest) -> EnrollmentResponse:
         return self._service.enroll(request)
@@ -280,6 +296,26 @@ class ControllerAPI:
         auth: AdminAuth,
     ) -> SandboxSessionRecord:
         return self._service.get_sandbox_session(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id,
+        )
+
+    def provision_sandbox_session(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+        auth: AdminAuth,
+        request: SandboxProvisionRequest,
+    ) -> SandboxSessionRecord:
+        # ``request`` is deliberately empty and strict.  Keeping it in this
+        # signature ensures the transport cannot bypass model validation.
+        del request
+        return self._sandbox_manager.provision(
             auth,
             target_id=target_id,
             profile_id=profile_id,

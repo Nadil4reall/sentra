@@ -458,6 +458,12 @@ class SandboxSessionCreateRequest(StrictControllerModel):
     administrator_sandbox_authorization_acknowledged: Literal[True]
 
 
+class SandboxProvisionRequest(StrictControllerModel):
+    """Zero-field M6E-B action request; infrastructure stays server-side."""
+
+    pass
+
+
 class SandboxSessionRecord(StrictControllerModel):
     """Controller-owned M6E-A lifecycle and sealed M4 authorization evidence."""
 
@@ -716,6 +722,7 @@ __all__ = [
     "ProfileSubmissionRequest",
     "SANDBOX_SESSION_TRANSITIONS",
     "SandboxProviderType",
+    "SandboxProvisionRequest",
     "SandboxSessionCreateRequest",
     "SandboxSessionRecord",
     "SandboxSessionStatus",
