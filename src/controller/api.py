@@ -23,6 +23,8 @@ from src.controller.models import (
     JobRecord,
     ProfileRecord,
     ProfileSubmissionRequest,
+    SandboxSessionCreateRequest,
+    SandboxSessionRecord,
     TargetRecord,
     ValidationJobCreateRequest,
     ValidationJobRecord,
@@ -87,6 +89,31 @@ ENDPOINTS = (
             "{profile_id}/compatibility-reports/{compatibility_report_id}"
         ),
         "get_compatibility_report",
+    ),
+    Endpoint(
+        "POST",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/sandbox-sessions"
+        ),
+        "create_sandbox_session",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/sandbox-sessions"
+        ),
+        "list_sandbox_sessions",
+    ),
+    Endpoint(
+        "GET",
+        (
+            f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+            "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
+            "{sandbox_session_id}"
+        ),
+        "get_sandbox_session",
     ),
     Endpoint(
         "POST",
@@ -213,6 +240,52 @@ class ControllerAPI:
             request,
         )
         return self._service.create_validation_job(auth, request)
+
+    def create_sandbox_session(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        auth: AdminAuth,
+        request: SandboxSessionCreateRequest,
+    ) -> SandboxSessionRecord:
+        return self._service.create_sandbox_session(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            request=request,
+        )
+
+    def list_sandbox_sessions(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        auth: AdminAuth,
+    ) -> list[SandboxSessionRecord]:
+        return self._service.list_sandbox_sessions(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+
+    def get_sandbox_session(
+        self,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+        auth: AdminAuth,
+    ) -> SandboxSessionRecord:
+        return self._service.get_sandbox_session(
+            auth,
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id,
+        )
 
     def list_validation_results(
         self,

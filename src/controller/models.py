@@ -51,6 +51,20 @@ NonEmptyString = Annotated[
 ]
 NonEmptySecret = Annotated[SecretStr, AfterValidator(_reject_blank_secret)]
 Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+SandboxInstanceId = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@-]*$",
+    ),
+    AfterValidator(_reject_blank_string),
+]
+SandboxTerminalReason = Annotated[
+    str,
+    Field(min_length=1, max_length=4096),
+    AfterValidator(_reject_blank_string),
+]
 
 
 class StrictControllerModel(BaseModel):
@@ -105,6 +119,55 @@ class ValidationMode(StrEnum):
     """M6D can orchestrate validation only inside an acknowledged sandbox."""
 
     SANDBOX = "sandbox"
+
+
+class SandboxProviderType(StrEnum):
+    """Closed provider vocabulary for the M6E-A lifecycle foundation."""
+
+    LOCAL_NESTED_VM = "local_nested_vm"
+
+
+class SandboxSessionStatus(StrEnum):
+    """Controller-owned lifecycle states; callers cannot set these directly."""
+
+    REQUESTED = "REQUESTED"
+    PROVISIONING = "PROVISIONING"
+    READY = "READY"
+    VALIDATING = "VALIDATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    QUARANTINED = "QUARANTINED"
+    CLOSED = "CLOSED"
+
+
+SANDBOX_SESSION_TRANSITIONS: dict[
+    SandboxSessionStatus, frozenset[SandboxSessionStatus]
+] = {
+    SandboxSessionStatus.REQUESTED: frozenset(
+        {SandboxSessionStatus.PROVISIONING}
+    ),
+    SandboxSessionStatus.PROVISIONING: frozenset(
+        {SandboxSessionStatus.READY, SandboxSessionStatus.FAILED}
+    ),
+    SandboxSessionStatus.READY: frozenset(
+        {SandboxSessionStatus.VALIDATING, SandboxSessionStatus.FAILED}
+    ),
+    SandboxSessionStatus.VALIDATING: frozenset(
+        {
+            SandboxSessionStatus.COMPLETED,
+            SandboxSessionStatus.FAILED,
+            SandboxSessionStatus.QUARANTINED,
+        }
+    ),
+    SandboxSessionStatus.COMPLETED: frozenset(
+        {SandboxSessionStatus.CLOSED}
+    ),
+    SandboxSessionStatus.FAILED: frozenset({SandboxSessionStatus.CLOSED}),
+    SandboxSessionStatus.QUARANTINED: frozenset(
+        {SandboxSessionStatus.CLOSED}
+    ),
+    SandboxSessionStatus.CLOSED: frozenset(),
+}
 
 
 class EnrollmentRequest(StrictControllerModel):
@@ -382,6 +445,159 @@ class CompatibilityReportRecord(StrictControllerModel):
         return self
 
 
+class SandboxSessionCreateRequest(StrictControllerModel):
+    """Minimal administrator authorization for an M6E-A sandbox session.
+
+    The lineage is supplied by the authenticated URL and revalidated by the
+    Controller.  There is deliberately no provider payload, instance ID,
+    command, argv, script, path, service, adapter, mount, or raw CIS content.
+    """
+
+    request_id: UUID
+    control_id: Literal["7.1.1"]
+    administrator_sandbox_authorization_acknowledged: Literal[True]
+
+
+class SandboxSessionRecord(StrictControllerModel):
+    """Controller-owned M6E-A lifecycle and sealed M4 authorization evidence."""
+
+    sandbox_session_id: UUID
+    request_id: UUID
+    source_target_id: UUID
+    source_profile_id: UUID
+    source_compatibility_report_id: UUID
+    control_id: Literal["7.1.1"]
+    provider_type: Literal[
+        SandboxProviderType.LOCAL_NESTED_VM
+    ] = SandboxProviderType.LOCAL_NESTED_VM
+    status: SandboxSessionStatus
+    sandbox_instance_id: SandboxInstanceId | None = None
+    administrator_sandbox_authorization_acknowledged: Literal[True]
+    compatibility_reference: CompatibilityReference
+    compatibility_reference_sha256: Sha256Hex
+    created_at: AwareDatetime
+    provisioning_started_at: AwareDatetime | None = None
+    ready_at: AwareDatetime | None = None
+    validation_started_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+    closed_at: AwareDatetime | None = None
+    failure_reason: SandboxTerminalReason | None = None
+    quarantine_reason: SandboxTerminalReason | None = None
+
+    @model_validator(mode="after")
+    def validate_session(self) -> "SandboxSessionRecord":
+        reference = self.compatibility_reference
+        if reference.control_id != self.control_id:
+            raise ValueError("sandbox control does not match M4 evidence")
+        if reference.report_source != (
+            "controller-stored-compatibility-report:"
+            f"{self.source_compatibility_report_id}"
+        ):
+            raise ValueError("sandbox report source does not match lineage")
+        if reference.profile_source != (
+            f"controller-stored-profile:{self.source_profile_id}"
+        ):
+            raise ValueError("sandbox profile source does not match lineage")
+
+        if self.failure_reason is not None and self.quarantine_reason is not None:
+            raise ValueError("sandbox cannot be both failed and quarantined")
+
+        ordered_times = [
+            self.created_at,
+            self.provisioning_started_at,
+            self.ready_at,
+            self.validation_started_at,
+            self.completed_at,
+            self.closed_at,
+        ]
+        previous = ordered_times[0]
+        for current in ordered_times[1:]:
+            if current is not None:
+                if current < previous:
+                    raise ValueError("sandbox lifecycle timestamps are out of order")
+                previous = current
+
+        provisioning = self.provisioning_started_at is not None
+        ready = self.ready_at is not None
+        validating = self.validation_started_at is not None
+        completed = self.completed_at is not None
+        closed = self.closed_at is not None
+        instance = self.sandbox_instance_id is not None
+
+        if ready and not provisioning:
+            raise ValueError("ready_at requires provisioning_started_at")
+        if validating and not ready:
+            raise ValueError("validation_started_at requires ready_at")
+        if ready != instance:
+            raise ValueError("sandbox instance identity must begin at READY")
+        if closed and not completed:
+            raise ValueError("closed_at requires a terminal completion time")
+
+        if self.status is SandboxSessionStatus.REQUESTED:
+            valid_shape = not any(
+                (provisioning, ready, validating, completed, closed, instance)
+            )
+        elif self.status is SandboxSessionStatus.PROVISIONING:
+            valid_shape = provisioning and not any(
+                (ready, validating, completed, closed, instance)
+            )
+        elif self.status is SandboxSessionStatus.READY:
+            valid_shape = provisioning and ready and instance and not any(
+                (validating, completed, closed)
+            )
+        elif self.status is SandboxSessionStatus.VALIDATING:
+            valid_shape = (
+                provisioning
+                and ready
+                and validating
+                and instance
+                and not completed
+                and not closed
+            )
+        elif self.status is SandboxSessionStatus.COMPLETED:
+            valid_shape = (
+                provisioning
+                and ready
+                and validating
+                and completed
+                and instance
+                and not closed
+            )
+        elif self.status is SandboxSessionStatus.QUARANTINED:
+            valid_shape = (
+                provisioning
+                and ready
+                and validating
+                and completed
+                and instance
+                and not closed
+                and self.quarantine_reason is not None
+            )
+        elif self.status is SandboxSessionStatus.FAILED:
+            valid_shape = provisioning and completed and not closed
+        else:
+            valid_shape = provisioning and completed and closed
+
+        if not valid_shape:
+            raise ValueError("sandbox lifecycle fields do not match its status")
+
+        if self.status is SandboxSessionStatus.FAILED:
+            if self.failure_reason is None or self.quarantine_reason is not None:
+                raise ValueError("FAILED requires only a failure reason")
+        elif self.status is SandboxSessionStatus.QUARANTINED:
+            if self.quarantine_reason is None or self.failure_reason is not None:
+                raise ValueError("QUARANTINED requires only a quarantine reason")
+        elif self.status is SandboxSessionStatus.CLOSED:
+            if self.quarantine_reason is not None and not validating:
+                raise ValueError("closed quarantine lineage requires validation")
+            if self.failure_reason is None and self.quarantine_reason is None:
+                if not validating:
+                    raise ValueError("closed successful lineage requires validation")
+        elif self.failure_reason is not None or self.quarantine_reason is not None:
+            raise ValueError("only terminal sandbox states may carry reasons")
+        return self
+
+
 class ValidationResultPayload(StrictControllerModel):
     """Canonical Agent-produced evidence bound to one M6D job."""
 
@@ -498,6 +714,11 @@ __all__ = [
     "ObservedTargetMetadata",
     "ProfileRecord",
     "ProfileSubmissionRequest",
+    "SANDBOX_SESSION_TRANSITIONS",
+    "SandboxProviderType",
+    "SandboxSessionCreateRequest",
+    "SandboxSessionRecord",
+    "SandboxSessionStatus",
     "StrictControllerModel",
     "TargetRecord",
     "TargetStatus",

@@ -13,7 +13,14 @@ import json
 from typing import Callable
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 
 from src.compatibility_engine.models import CompatibilityReport
 from src.controller.compatibility import (
@@ -38,6 +45,10 @@ from src.controller.models import (
     MetadataChangeRecord,
     ProfileRecord,
     ProfileSubmissionRequest,
+    SandboxProviderType,
+    SandboxSessionCreateRequest,
+    SandboxSessionRecord,
+    SandboxSessionStatus,
     TargetRecord,
     ValidationJobCreateRequest,
     ValidationJobRecord,
@@ -132,6 +143,18 @@ def _canonical_compatibility_report_json(report: CompatibilityReport) -> str:
 
     return json.dumps(
         report.model_dump(mode="json"),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _canonical_sandbox_reference_json(reference: BaseModel) -> str:
+    """Canonicalize the validated M4 reference sealed into an M6E-A session."""
+
+    return json.dumps(
+        reference.model_dump(mode="json"),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -476,6 +499,302 @@ class ControllerService:
         if report is None:
             raise ControllerNotFoundError("compatibility report does not exist")
         return report
+
+    def create_sandbox_session(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        request: SandboxSessionCreateRequest,
+    ) -> SandboxSessionRecord:
+        """Record one inert, administrator-authorized M6E-A lifecycle.
+
+        This operation does not create a VM or dispatch validation.  The M4
+        control reference is derived from Controller-stored evidence rather
+        than accepted from the caller.
+        """
+
+        self._authenticate_admin(auth)
+        report = self._require_compatibility_lineage(
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+        try:
+            reference = compatibility_reference_from_record(
+                report,
+                request.control_id,
+            )
+        except ValueError as error:
+            raise ControllerConflictError(
+                "compatibility report does not authorize this control"
+            ) from error
+        reference_json = _canonical_sandbox_reference_json(reference)
+        session = SandboxSessionRecord(
+            sandbox_session_id=self._new_id(),
+            request_id=request.request_id,
+            source_target_id=target_id,
+            source_profile_id=profile_id,
+            source_compatibility_report_id=compatibility_report_id,
+            control_id=request.control_id,
+            provider_type=SandboxProviderType.LOCAL_NESTED_VM,
+            status=SandboxSessionStatus.REQUESTED,
+            sandbox_instance_id=None,
+            administrator_sandbox_authorization_acknowledged=(
+                request.administrator_sandbox_authorization_acknowledged
+            ),
+            compatibility_reference=reference,
+            compatibility_reference_sha256=hashlib.sha256(
+                reference_json.encode("utf-8")
+            ).hexdigest(),
+            created_at=self._now(),
+        )
+        try:
+            return self._repository.create_sandbox_session(session)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError(
+                "sandbox session lineage does not exist"
+            ) from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "sandbox session conflicts with Controller state"
+            ) from error
+
+    def list_sandbox_sessions(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[SandboxSessionRecord]:
+        """List sessions only through their complete M3/M4 source lineage."""
+
+        self._authenticate_admin(auth)
+        self._require_compatibility_lineage(
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+        try:
+            return self._repository.list_sandbox_sessions(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored sandbox session could not be validated"
+            ) from error
+
+    def get_sandbox_session(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Retrieve one session only through its complete source lineage."""
+
+        self._authenticate_admin(auth)
+        self._require_compatibility_lineage(
+            target_id=target_id,
+            profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+        )
+        try:
+            session = self._repository.get_sandbox_session(
+                target_id=target_id,
+                profile_id=profile_id,
+                compatibility_report_id=compatibility_report_id,
+                sandbox_session_id=sandbox_session_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored sandbox session could not be validated"
+            ) from error
+        if session is None:
+            raise ControllerNotFoundError("sandbox session does not exist")
+        return session
+
+    def _get_internal_sandbox_session(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        try:
+            session = self._repository.get_sandbox_session_by_id(
+                sandbox_session_id
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored sandbox session could not be validated"
+            ) from error
+        if session is None:
+            raise ControllerNotFoundError("sandbox session does not exist")
+        return session
+
+    @staticmethod
+    def _updated_sandbox_session(
+        session: SandboxSessionRecord,
+        **changes: object,
+    ) -> SandboxSessionRecord:
+        values = session.model_dump(mode="python")
+        values.update(changes)
+        try:
+            return SandboxSessionRecord.model_validate(values)
+        except ValidationError as error:
+            raise ControllerConflictError(
+                "sandbox lifecycle transition is not allowed"
+            ) from error
+
+    def _store_sandbox_transition(
+        self,
+        *,
+        updated: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        try:
+            transitions = {
+                SandboxSessionStatus.PROVISIONING: (
+                    self._repository.mark_provisioning
+                ),
+                SandboxSessionStatus.READY: self._repository.mark_ready,
+                SandboxSessionStatus.VALIDATING: (
+                    self._repository.mark_validating
+                ),
+                SandboxSessionStatus.COMPLETED: (
+                    self._repository.mark_completed
+                ),
+                SandboxSessionStatus.FAILED: self._repository.mark_failed,
+                SandboxSessionStatus.QUARANTINED: (
+                    self._repository.mark_quarantined
+                ),
+                SandboxSessionStatus.CLOSED: self._repository.close_session,
+            }
+            transition = transitions.get(updated.status)
+            if transition is None:
+                raise StorageConflictError(
+                    "sandbox lifecycle transition is not allowed"
+                )
+            return transition(updated)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError(
+                "sandbox session does not exist"
+            ) from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "sandbox lifecycle transition conflicts with Controller state"
+            ) from error
+
+    def mark_provisioning(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Internal provider boundary: REQUESTED -> PROVISIONING."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.PROVISIONING,
+            provisioning_started_at=self._now(),
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def mark_ready(
+        self,
+        sandbox_session_id: UUID,
+        *,
+        sandbox_instance_id: str,
+    ) -> SandboxSessionRecord:
+        """Internal provider boundary: PROVISIONING -> READY."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.READY,
+            sandbox_instance_id=sandbox_instance_id,
+            ready_at=self._now(),
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def mark_validating(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Internal orchestrator boundary: READY -> VALIDATING."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.VALIDATING,
+            validation_started_at=self._now(),
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def mark_completed(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Internal orchestrator boundary: VALIDATING -> COMPLETED."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.COMPLETED,
+            completed_at=self._now(),
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def mark_failed(
+        self,
+        sandbox_session_id: UUID,
+        *,
+        failure_reason: str,
+    ) -> SandboxSessionRecord:
+        """Internal failure boundary from provisioning, ready, or validating."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.FAILED,
+            completed_at=self._now(),
+            failure_reason=failure_reason,
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def mark_quarantined(
+        self,
+        sandbox_session_id: UUID,
+        *,
+        quarantine_reason: str,
+    ) -> SandboxSessionRecord:
+        """Internal isolation boundary: VALIDATING -> QUARANTINED."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.QUARANTINED,
+            completed_at=self._now(),
+            quarantine_reason=quarantine_reason,
+        )
+        return self._store_sandbox_transition(updated=updated)
+
+    def close_session(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Internal cleanup boundary for a terminal, non-closed session."""
+
+        previous = self._get_internal_sandbox_session(sandbox_session_id)
+        updated = self._updated_sandbox_session(
+            previous,
+            status=SandboxSessionStatus.CLOSED,
+            closed_at=self._now(),
+        )
+        return self._store_sandbox_transition(updated=updated)
 
     def create_validation_job(
         self,

@@ -39,6 +39,7 @@ from src.controller.models import (
     JobCreateRequest,
     JobPollRequest,
     ProfileSubmissionRequest,
+    SandboxSessionCreateRequest,
     ValidationJobCreateRequest,
     ValidationResultSubmissionRequest,
 )
@@ -71,6 +72,14 @@ _ADMIN_COMPATIBILITY_ITEM_ROUTE = re.compile(
 _ADMIN_VALIDATION_JOB_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
     r"compatibility-reports/([^/]+)/validation-jobs$"
+)
+_ADMIN_SANDBOX_SESSION_COLLECTION_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/sandbox-sessions$"
+)
+_ADMIN_SANDBOX_SESSION_ITEM_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)$"
 )
 _ADMIN_VALIDATION_RESULT_COLLECTION_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
@@ -287,6 +296,62 @@ class ControllerHTTPSApplication:
                     request,
                 )
                 return _json_response(HTTPStatus.CREATED, _model_payload(job))
+
+            sandbox_item_match = _ADMIN_SANDBOX_SESSION_ITEM_ROUTE.fullmatch(
+                path
+            )
+            if sandbox_item_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                target_id = UUID(sandbox_item_match.group(1))
+                profile_id = UUID(sandbox_item_match.group(2))
+                report_id = UUID(sandbox_item_match.group(3))
+                sandbox_session_id = UUID(sandbox_item_match.group(4))
+                auth = self._admin_auth(normalized_headers)
+                session = self._api.get_sandbox_session(
+                    target_id,
+                    profile_id,
+                    report_id,
+                    sandbox_session_id,
+                    auth,
+                )
+                return _json_response(HTTPStatus.OK, _model_payload(session))
+
+            sandbox_collection_match = (
+                _ADMIN_SANDBOX_SESSION_COLLECTION_ROUTE.fullmatch(path)
+            )
+            if sandbox_collection_match is not None:
+                target_id = UUID(sandbox_collection_match.group(1))
+                profile_id = UUID(sandbox_collection_match.group(2))
+                report_id = UUID(sandbox_collection_match.group(3))
+                auth = self._admin_auth(normalized_headers)
+                if method == "POST":
+                    request = SandboxSessionCreateRequest.model_validate_json(
+                        body
+                    )
+                    session = self._api.create_sandbox_session(
+                        target_id,
+                        profile_id,
+                        report_id,
+                        auth,
+                        request,
+                    )
+                    return _json_response(
+                        HTTPStatus.CREATED,
+                        _model_payload(session),
+                    )
+                if method == "GET":
+                    sessions = self._api.list_sandbox_sessions(
+                        target_id,
+                        profile_id,
+                        report_id,
+                        auth,
+                    )
+                    return _json_response(
+                        HTTPStatus.OK,
+                        _list_payload(sessions),
+                    )
+                return self._method_not_allowed()
 
             compatibility_item_match = (
                 _ADMIN_COMPATIBILITY_ITEM_ROUTE.fullmatch(path)

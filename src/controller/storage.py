@@ -30,6 +30,10 @@ from src.controller.models import (
     MetadataChangeRecord,
     ObservedTargetMetadata,
     ProfileRecord,
+    SANDBOX_SESSION_TRANSITIONS,
+    SandboxProviderType,
+    SandboxSessionRecord,
+    SandboxSessionStatus,
     TargetRecord,
     TargetStatus,
     ValidationJobRecord,
@@ -213,6 +217,59 @@ class ControllerRepository(Protocol):
         profile_id: UUID,
         compatibility_report_id: UUID,
     ) -> list[ValidationResultRecord]: ...
+
+    def create_sandbox_session(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def get_sandbox_session(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord | None: ...
+
+    def get_sandbox_session_by_id(
+        self, sandbox_session_id: UUID
+    ) -> SandboxSessionRecord | None: ...
+
+    def list_sandbox_sessions(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[SandboxSessionRecord]: ...
+
+    def mark_provisioning(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def mark_ready(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def mark_validating(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def mark_completed(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def mark_failed(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def mark_quarantined(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
+
+    def close_session(
+        self, session: SandboxSessionRecord
+    ) -> SandboxSessionRecord: ...
 
 
 def _canonical_json(model: ObservedTargetMetadata) -> str:
@@ -441,6 +498,203 @@ _CREATE_VALIDATION_RESULTS_SQL = """
             REFERENCES validation_jobs(
                 target_id, validation_job_id, assigned_agent_id
             )
+    )
+"""
+
+_SANDBOX_SESSION_COLUMNS = {
+    "sandbox_session_id",
+    "request_id",
+    "source_target_id",
+    "source_profile_id",
+    "source_compatibility_report_id",
+    "control_id",
+    "provider_type",
+    "status",
+    "sandbox_instance_id",
+    "administrator_sandbox_authorization_acknowledged",
+    "compatibility_reference_json",
+    "compatibility_reference_sha256",
+    "created_at",
+    "provisioning_started_at",
+    "ready_at",
+    "validation_started_at",
+    "completed_at",
+    "closed_at",
+    "failure_reason",
+    "quarantine_reason",
+}
+_CREATE_SANDBOX_SESSIONS_SQL = """
+    CREATE TABLE sandbox_sessions (
+        sandbox_session_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        source_target_id TEXT NOT NULL,
+        source_profile_id TEXT NOT NULL,
+        source_compatibility_report_id TEXT NOT NULL,
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        provider_type TEXT NOT NULL CHECK (provider_type = 'local_nested_vm'),
+        status TEXT NOT NULL CHECK (
+            status IN (
+                'REQUESTED', 'PROVISIONING', 'READY', 'VALIDATING',
+                'COMPLETED', 'FAILED', 'QUARANTINED', 'CLOSED'
+            )
+        ),
+        sandbox_instance_id TEXT CHECK (
+            sandbox_instance_id IS NULL
+            OR length(trim(sandbox_instance_id)) > 0
+        ),
+        administrator_sandbox_authorization_acknowledged INTEGER NOT NULL
+            CHECK (administrator_sandbox_authorization_acknowledged = 1),
+        compatibility_reference_json TEXT NOT NULL,
+        compatibility_reference_sha256 TEXT NOT NULL CHECK (
+            length(compatibility_reference_sha256) = 64
+            AND compatibility_reference_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        created_at TEXT NOT NULL,
+        provisioning_started_at TEXT,
+        ready_at TEXT,
+        validation_started_at TEXT,
+        completed_at TEXT,
+        closed_at TEXT,
+        failure_reason TEXT CHECK (
+            failure_reason IS NULL OR length(trim(failure_reason)) > 0
+        ),
+        quarantine_reason TEXT CHECK (
+            quarantine_reason IS NULL OR length(trim(quarantine_reason)) > 0
+        ),
+        CHECK (
+            (
+                status = 'REQUESTED'
+                AND sandbox_instance_id IS NULL
+                AND provisioning_started_at IS NULL
+                AND ready_at IS NULL
+                AND validation_started_at IS NULL
+                AND completed_at IS NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NULL
+            ) OR (
+                status = 'PROVISIONING'
+                AND sandbox_instance_id IS NULL
+                AND provisioning_started_at IS NOT NULL
+                AND ready_at IS NULL
+                AND validation_started_at IS NULL
+                AND completed_at IS NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NULL
+            ) OR (
+                status = 'READY'
+                AND sandbox_instance_id IS NOT NULL
+                AND provisioning_started_at IS NOT NULL
+                AND ready_at IS NOT NULL
+                AND validation_started_at IS NULL
+                AND completed_at IS NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NULL
+            ) OR (
+                status = 'VALIDATING'
+                AND sandbox_instance_id IS NOT NULL
+                AND provisioning_started_at IS NOT NULL
+                AND ready_at IS NOT NULL
+                AND validation_started_at IS NOT NULL
+                AND completed_at IS NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NULL
+            ) OR (
+                status = 'COMPLETED'
+                AND sandbox_instance_id IS NOT NULL
+                AND provisioning_started_at IS NOT NULL
+                AND ready_at IS NOT NULL
+                AND validation_started_at IS NOT NULL
+                AND completed_at IS NOT NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NULL
+            ) OR (
+                status = 'FAILED'
+                AND provisioning_started_at IS NOT NULL
+                AND completed_at IS NOT NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NOT NULL
+                AND quarantine_reason IS NULL
+                AND (
+                    (
+                        sandbox_instance_id IS NULL
+                        AND ready_at IS NULL
+                        AND validation_started_at IS NULL
+                    ) OR (
+                        sandbox_instance_id IS NOT NULL
+                        AND ready_at IS NOT NULL
+                    )
+                )
+            ) OR (
+                status = 'QUARANTINED'
+                AND sandbox_instance_id IS NOT NULL
+                AND provisioning_started_at IS NOT NULL
+                AND ready_at IS NOT NULL
+                AND validation_started_at IS NOT NULL
+                AND completed_at IS NOT NULL
+                AND closed_at IS NULL
+                AND failure_reason IS NULL
+                AND quarantine_reason IS NOT NULL
+            ) OR (
+                status = 'CLOSED'
+                AND provisioning_started_at IS NOT NULL
+                AND completed_at IS NOT NULL
+                AND closed_at IS NOT NULL
+                AND NOT (
+                    failure_reason IS NOT NULL
+                    AND quarantine_reason IS NOT NULL
+                )
+                AND (
+                    (
+                        failure_reason IS NOT NULL
+                        AND quarantine_reason IS NULL
+                        AND (
+                            (
+                                sandbox_instance_id IS NULL
+                                AND ready_at IS NULL
+                                AND validation_started_at IS NULL
+                            ) OR (
+                                sandbox_instance_id IS NOT NULL
+                                AND ready_at IS NOT NULL
+                            )
+                        )
+                    ) OR (
+                        failure_reason IS NULL
+                        AND quarantine_reason IS NOT NULL
+                        AND sandbox_instance_id IS NOT NULL
+                        AND ready_at IS NOT NULL
+                        AND validation_started_at IS NOT NULL
+                    ) OR (
+                        failure_reason IS NULL
+                        AND quarantine_reason IS NULL
+                        AND sandbox_instance_id IS NOT NULL
+                        AND ready_at IS NOT NULL
+                        AND validation_started_at IS NOT NULL
+                    )
+                )
+            )
+        ),
+        UNIQUE (
+            source_target_id, source_profile_id,
+            source_compatibility_report_id, sandbox_session_id
+        ),
+        UNIQUE (provider_type, sandbox_instance_id),
+        FOREIGN KEY (source_target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (source_profile_id) REFERENCES profiles(profile_id),
+        FOREIGN KEY (source_target_id, source_profile_id)
+            REFERENCES profiles(target_id, profile_id),
+        FOREIGN KEY (source_compatibility_report_id)
+            REFERENCES compatibility_reports(compatibility_report_id),
+        FOREIGN KEY (
+            source_target_id, source_profile_id,
+            source_compatibility_report_id
+        ) REFERENCES compatibility_reports(
+            target_id, profile_id, compatibility_report_id
+        )
     )
 """
 
@@ -687,6 +941,24 @@ class SQLiteControllerRepository:
                 connection.execute(
                     "RELEASE SAVEPOINT sentra_m6d_validation_schema"
                 )
+            # M6E-A is another strictly additive Controller-side table.  Keep
+            # its migration independently atomic so a populated M6D database
+            # is preserved byte-for-byte if the new schema is unacceptable.
+            connection.execute("SAVEPOINT sentra_m6e_sandbox_schema")
+            try:
+                self._initialize_sandbox_storage(connection)
+            except BaseException:
+                connection.execute(
+                    "ROLLBACK TO SAVEPOINT sentra_m6e_sandbox_schema"
+                )
+                connection.execute(
+                    "RELEASE SAVEPOINT sentra_m6e_sandbox_schema"
+                )
+                raise
+            else:
+                connection.execute(
+                    "RELEASE SAVEPOINT sentra_m6e_sandbox_schema"
+                )
 
     @staticmethod
     def _initialize_compatibility_reports(connection: sqlite3.Connection) -> None:
@@ -829,6 +1101,66 @@ class SQLiteControllerRepository:
         if foreign_key_violations:
             raise ControllerStorageSecurityError(
                 "controller validation storage contains broken lineage"
+            )
+
+    @staticmethod
+    def _initialize_sandbox_storage(connection: sqlite3.Connection) -> None:
+        """Create the exact additive M6E-A schema or fail closed.
+
+        There is no lossy migration path: an absent table is the expected M6D
+        starting point, while any existing table must have the complete known
+        columns and constraints.
+        """
+
+        schema_row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'sandbox_sessions'"
+        ).fetchone()
+        if schema_row is None:
+            connection.execute(_CREATE_SANDBOX_SESSIONS_SQL)
+            schema_row = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'sandbox_sessions'"
+            ).fetchone()
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(sandbox_sessions)"
+            ).fetchall()
+        }
+        if (
+            columns != _SANDBOX_SESSION_COLUMNS
+            or schema_row is None
+            or not isinstance(schema_row["sql"], str)
+            or _normalized_schema_sql(schema_row["sql"])
+            != _normalized_schema_sql(_CREATE_SANDBOX_SESSIONS_SQL)
+        ):
+            raise ControllerStorageSecurityError(
+                "controller sandbox-session schema constraints are not recognized"
+            )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS sandbox_sessions_lineage_created_idx
+            ON sandbox_sessions(
+                source_target_id, source_profile_id,
+                source_compatibility_report_id, created_at,
+                sandbox_session_id
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS sandbox_sessions_status_created_idx
+            ON sandbox_sessions(status, created_at, sandbox_session_id)
+            """
+        )
+        if connection.execute(
+            "PRAGMA foreign_key_check(sandbox_sessions)"
+        ).fetchall():
+            raise ControllerStorageSecurityError(
+                "controller sandbox-session storage contains broken lineage"
             )
 
     def enroll(
@@ -2184,3 +2516,518 @@ class SQLiteControllerRepository:
                 self._stored_validation_result_from_row(connection, row)[0]
                 for row in rows
             ]
+
+    @staticmethod
+    def _sandbox_authorization_matches(
+        existing: SandboxSessionRecord,
+        requested: SandboxSessionRecord,
+    ) -> bool:
+        """Compare the immutable administrator authorization for idempotency."""
+
+        return (
+            existing.request_id == requested.request_id
+            and existing.source_target_id == requested.source_target_id
+            and existing.source_profile_id == requested.source_profile_id
+            and existing.source_compatibility_report_id
+            == requested.source_compatibility_report_id
+            and existing.control_id == requested.control_id
+            and existing.provider_type is requested.provider_type
+            and existing.administrator_sandbox_authorization_acknowledged
+            is requested.administrator_sandbox_authorization_acknowledged
+            and existing.compatibility_reference
+            == requested.compatibility_reference
+            and existing.compatibility_reference_sha256
+            == requested.compatibility_reference_sha256
+        )
+
+    @classmethod
+    def _validate_sandbox_lineage(
+        cls,
+        connection: sqlite3.Connection,
+        session: SandboxSessionRecord,
+    ) -> None:
+        profile_row = connection.execute(
+            "SELECT * FROM profiles WHERE target_id = ? AND profile_id = ?",
+            (
+                str(session.source_target_id),
+                str(session.source_profile_id),
+            ),
+        ).fetchone()
+        if profile_row is None:
+            raise StorageNotFoundError("sandbox source profile does not exist")
+        stored_profile = cls._stored_profile_from_row(profile_row)
+
+        report_row = connection.execute(
+            """
+            SELECT * FROM compatibility_reports
+            WHERE target_id = ? AND profile_id = ?
+              AND compatibility_report_id = ?
+            """,
+            (
+                str(session.source_target_id),
+                str(session.source_profile_id),
+                str(session.source_compatibility_report_id),
+            ),
+        ).fetchone()
+        if report_row is None:
+            raise StorageNotFoundError(
+                "sandbox compatibility report does not exist"
+            )
+        stored_report = cls._stored_compatibility_report_from_row(report_row)
+        cls._validate_compatibility_report_lineage(stored_report, stored_profile)
+        try:
+            expected_reference = compatibility_reference_from_record(
+                stored_report.record,
+                session.control_id,
+            )
+        except ValueError as error:
+            raise StorageConflictError(
+                "sandbox control is absent from its compatibility report"
+            ) from error
+        reference_json = _canonical_compatibility_reference_json(
+            session.compatibility_reference
+        )
+        if (
+            session.compatibility_reference != expected_reference
+            or session.compatibility_reference_sha256 != _sha256(reference_json)
+        ):
+            raise StorageConflictError(
+                "sandbox session changed its M4 authorization evidence"
+            )
+        if session.created_at < stored_report.record.generated_at:
+            raise StorageConflictError(
+                "sandbox session predates its compatibility report"
+            )
+
+    @classmethod
+    def _stored_sandbox_session_from_row(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> SandboxSessionRecord:
+        try:
+            acknowledgment = row[
+                "administrator_sandbox_authorization_acknowledged"
+            ]
+            if acknowledgment != 1:
+                raise ValueError(
+                    "stored sandbox authorization must be acknowledged"
+                )
+            reference = cls._compatibility_reference_from_json(
+                row["compatibility_reference_json"]
+            )
+            reference_json = _canonical_compatibility_reference_json(reference)
+            if _sha256(reference_json) != row["compatibility_reference_sha256"]:
+                raise ValueError(
+                    "stored sandbox compatibility reference hash is invalid"
+                )
+            session = SandboxSessionRecord(
+                sandbox_session_id=_canonical_stored_uuid_text(
+                    row["sandbox_session_id"], "sandbox_session_id"
+                ),
+                request_id=_canonical_stored_uuid_text(
+                    row["request_id"], "sandbox request_id"
+                ),
+                source_target_id=_canonical_stored_uuid_text(
+                    row["source_target_id"], "sandbox source_target_id"
+                ),
+                source_profile_id=_canonical_stored_uuid_text(
+                    row["source_profile_id"], "sandbox source_profile_id"
+                ),
+                source_compatibility_report_id=_canonical_stored_uuid_text(
+                    row["source_compatibility_report_id"],
+                    "sandbox source_compatibility_report_id",
+                ),
+                control_id=row["control_id"],
+                provider_type=SandboxProviderType(row["provider_type"]),
+                status=SandboxSessionStatus(row["status"]),
+                sandbox_instance_id=row["sandbox_instance_id"],
+                administrator_sandbox_authorization_acknowledged=bool(
+                    acknowledgment
+                ),
+                compatibility_reference=reference,
+                compatibility_reference_sha256=row[
+                    "compatibility_reference_sha256"
+                ],
+                created_at=datetime.fromisoformat(row["created_at"]),
+                provisioning_started_at=_parse_datetime(
+                    row["provisioning_started_at"]
+                ),
+                ready_at=_parse_datetime(row["ready_at"]),
+                validation_started_at=_parse_datetime(
+                    row["validation_started_at"]
+                ),
+                completed_at=_parse_datetime(row["completed_at"]),
+                closed_at=_parse_datetime(row["closed_at"]),
+                failure_reason=row["failure_reason"],
+                quarantine_reason=row["quarantine_reason"],
+            )
+            cls._validate_sandbox_lineage(connection, session)
+            return session
+        except StorageConflictError:
+            raise
+        except StorageNotFoundError as error:
+            raise StorageConflictError(
+                "stored sandbox session lineage is missing"
+            ) from error
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError(
+                "stored sandbox session metadata is invalid"
+            ) from error
+
+    def create_sandbox_session(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.REQUESTED:
+            raise StorageConflictError("a new sandbox session must be REQUESTED")
+        reference_json = _canonical_compatibility_reference_json(
+            session.compatibility_reference
+        )
+        if _sha256(reference_json) != session.compatibility_reference_sha256:
+            raise StorageConflictError(
+                "sandbox compatibility reference hash is invalid"
+            )
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for row in connection.execute(
+                "SELECT request_id FROM sandbox_sessions"
+            ).fetchall():
+                _canonical_stored_uuid_text(
+                    row["request_id"], "sandbox request_id"
+                )
+
+            existing_row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE request_id = ?",
+                (str(session.request_id),),
+            ).fetchone()
+            if existing_row is not None:
+                existing = self._stored_sandbox_session_from_row(
+                    connection, existing_row
+                )
+                if not self._sandbox_authorization_matches(existing, session):
+                    raise StorageConflictError(
+                        "sandbox request ID conflicts with another authorization"
+                    )
+                return existing
+
+            self._validate_sandbox_lineage(connection, session)
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO sandbox_sessions (
+                        sandbox_session_id, request_id, source_target_id,
+                        source_profile_id, source_compatibility_report_id,
+                        control_id, provider_type, status,
+                        sandbox_instance_id,
+                        administrator_sandbox_authorization_acknowledged,
+                        compatibility_reference_json,
+                        compatibility_reference_sha256, created_at,
+                        provisioning_started_at, ready_at,
+                        validation_started_at, completed_at, closed_at,
+                        failure_reason, quarantine_reason
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?,
+                        NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                    )
+                    """,
+                    (
+                        str(session.sandbox_session_id),
+                        str(session.request_id),
+                        str(session.source_target_id),
+                        str(session.source_profile_id),
+                        str(session.source_compatibility_report_id),
+                        session.control_id,
+                        session.provider_type.value,
+                        session.status.value,
+                        int(
+                            session.administrator_sandbox_authorization_acknowledged
+                        ),
+                        reference_json,
+                        session.compatibility_reference_sha256,
+                        session.created_at.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError(
+                    "sandbox session ID, request ID, instance, or lineage conflicts"
+                ) from error
+        return session
+
+    def get_sandbox_session(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM sandbox_sessions
+                WHERE source_target_id = ? AND source_profile_id = ?
+                  AND source_compatibility_report_id = ?
+                  AND sandbox_session_id = ?
+                """,
+                (
+                    str(target_id),
+                    str(profile_id),
+                    str(compatibility_report_id),
+                    str(sandbox_session_id),
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._stored_sandbox_session_from_row(connection, row)
+
+    def list_sandbox_sessions(
+        self,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+    ) -> list[SandboxSessionRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM sandbox_sessions
+                WHERE source_target_id = ? AND source_profile_id = ?
+                  AND source_compatibility_report_id = ?
+                ORDER BY created_at, sandbox_session_id
+                """,
+                (
+                    str(target_id),
+                    str(profile_id),
+                    str(compatibility_report_id),
+                ),
+            ).fetchall()
+            return [
+                self._stored_sandbox_session_from_row(connection, row)
+                for row in rows
+            ]
+
+    def get_sandbox_session_by_id(
+        self,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord | None:
+        """Trusted internal lookup used only by explicit lifecycle methods."""
+
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(sandbox_session_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._stored_sandbox_session_from_row(connection, row)
+
+    def _transition_sandbox_session(
+        self,
+        *,
+        expected_statuses: frozenset[SandboxSessionStatus],
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(session.sandbox_session_id),),
+            ).fetchone()
+            if row is None:
+                raise StorageNotFoundError("sandbox session does not exist")
+            current = self._stored_sandbox_session_from_row(connection, row)
+            if current.status not in expected_statuses or (
+                session.status not in SANDBOX_SESSION_TRANSITIONS[current.status]
+            ):
+                raise StorageConflictError(
+                    "sandbox session is not in the expected prior state"
+                )
+            if not self._sandbox_authorization_matches(current, session) or (
+                current.sandbox_session_id != session.sandbox_session_id
+                or current.created_at != session.created_at
+            ):
+                raise StorageConflictError(
+                    "sandbox transition changed immutable authorization"
+                )
+            allowed_changes = {
+                SandboxSessionStatus.PROVISIONING: {
+                    "status",
+                    "provisioning_started_at",
+                },
+                SandboxSessionStatus.READY: {
+                    "status",
+                    "sandbox_instance_id",
+                    "ready_at",
+                },
+                SandboxSessionStatus.VALIDATING: {
+                    "status",
+                    "validation_started_at",
+                },
+                SandboxSessionStatus.COMPLETED: {
+                    "status",
+                    "completed_at",
+                },
+                SandboxSessionStatus.FAILED: {
+                    "status",
+                    "completed_at",
+                    "failure_reason",
+                },
+                SandboxSessionStatus.QUARANTINED: {
+                    "status",
+                    "completed_at",
+                    "quarantine_reason",
+                },
+                SandboxSessionStatus.CLOSED: {
+                    "status",
+                    "closed_at",
+                },
+            }[session.status]
+            for field_name in SandboxSessionRecord.model_fields:
+                if field_name in allowed_changes:
+                    continue
+                if getattr(current, field_name) != getattr(session, field_name):
+                    raise StorageConflictError(
+                        "sandbox transition changed previously recorded state"
+                    )
+            self._validate_sandbox_lineage(connection, session)
+            try:
+                connection.execute(
+                    """
+                    UPDATE sandbox_sessions
+                    SET status = ?, sandbox_instance_id = ?,
+                        provisioning_started_at = ?, ready_at = ?,
+                        validation_started_at = ?, completed_at = ?,
+                        closed_at = ?, failure_reason = ?,
+                        quarantine_reason = ?
+                    WHERE sandbox_session_id = ? AND status = ?
+                    """,
+                    (
+                        session.status.value,
+                        session.sandbox_instance_id,
+                        session.provisioning_started_at.isoformat()
+                        if session.provisioning_started_at is not None
+                        else None,
+                        session.ready_at.isoformat()
+                        if session.ready_at is not None
+                        else None,
+                        session.validation_started_at.isoformat()
+                        if session.validation_started_at is not None
+                        else None,
+                        session.completed_at.isoformat()
+                        if session.completed_at is not None
+                        else None,
+                        session.closed_at.isoformat()
+                        if session.closed_at is not None
+                        else None,
+                        session.failure_reason,
+                        session.quarantine_reason,
+                        str(session.sandbox_session_id),
+                        current.status.value,
+                    ),
+                )
+                if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise StorageConflictError(
+                        "sandbox session changed during transition"
+                    )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError(
+                    "sandbox lifecycle or instance identity conflicts"
+                ) from error
+
+            updated_row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(session.sandbox_session_id),),
+            ).fetchone()
+            assert updated_row is not None
+            return self._stored_sandbox_session_from_row(connection, updated_row)
+
+    def mark_provisioning(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.PROVISIONING:
+            raise StorageConflictError("sandbox transition must end in PROVISIONING")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset({SandboxSessionStatus.REQUESTED}),
+            session=session,
+        )
+
+    def mark_ready(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.READY:
+            raise StorageConflictError("sandbox transition must end in READY")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset({SandboxSessionStatus.PROVISIONING}),
+            session=session,
+        )
+
+    def mark_validating(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.VALIDATING:
+            raise StorageConflictError("sandbox transition must end in VALIDATING")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset({SandboxSessionStatus.READY}),
+            session=session,
+        )
+
+    def mark_completed(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.COMPLETED:
+            raise StorageConflictError("sandbox transition must end in COMPLETED")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset({SandboxSessionStatus.VALIDATING}),
+            session=session,
+        )
+
+    def mark_failed(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.FAILED:
+            raise StorageConflictError("sandbox transition must end in FAILED")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset(
+                {
+                    SandboxSessionStatus.PROVISIONING,
+                    SandboxSessionStatus.READY,
+                    SandboxSessionStatus.VALIDATING,
+                }
+            ),
+            session=session,
+        )
+
+    def mark_quarantined(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.QUARANTINED:
+            raise StorageConflictError("sandbox transition must end in QUARANTINED")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset({SandboxSessionStatus.VALIDATING}),
+            session=session,
+        )
+
+    def close_session(
+        self,
+        session: SandboxSessionRecord,
+    ) -> SandboxSessionRecord:
+        if session.status is not SandboxSessionStatus.CLOSED:
+            raise StorageConflictError("sandbox transition must end in CLOSED")
+        return self._transition_sandbox_session(
+            expected_statuses=frozenset(
+                {
+                    SandboxSessionStatus.COMPLETED,
+                    SandboxSessionStatus.FAILED,
+                    SandboxSessionStatus.QUARANTINED,
+                }
+            ),
+            session=session,
+        )
