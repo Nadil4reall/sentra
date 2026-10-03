@@ -27,6 +27,7 @@ from pydantic import (
     SecretStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from src.controller.api import API_PREFIX, ControllerAPI
@@ -51,6 +52,13 @@ from src.controller.service import (
     ControllerNotFoundError,
     ControllerService,
     ControllerSettings,
+)
+from src.controller.sandbox import (
+    LibvirtBackend,
+    LocalNestedVmConfig,
+    LocalNestedVmProvider,
+    SandboxManager,
+    SandboxStorageMode,
 )
 from src.controller.storage import SQLiteControllerRepository
 
@@ -118,6 +126,11 @@ class ControllerTransportConfig(BaseModel):
     polling_interval_seconds: int = Field(default=30, ge=5, le=3_600)
     max_jobs_per_poll: int = Field(default=10, ge=1, le=100)
     max_request_bytes: int = Field(default=8 * 1024 * 1024, ge=1_024)
+    sandbox_storage_root: Path | None = None
+    sandbox_base_image: Path | None = None
+    libvirt_qemu_uid: int | None = Field(default=None, ge=1)
+    libvirt_qemu_gid: int | None = Field(default=None, ge=1)
+    sandbox_storage_parent_uid: int = Field(default=0, ge=0)
 
     @field_validator("listen_host")
     @classmethod
@@ -132,6 +145,24 @@ class ControllerTransportConfig(BaseModel):
         if not value.get_secret_value().strip():
             raise ValueError("controller credentials must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def validate_sandbox_runtime_configuration(self) -> "ControllerTransportConfig":
+        settings = (
+            self.sandbox_storage_root,
+            self.sandbox_base_image,
+            self.libvirt_qemu_uid,
+            self.libvirt_qemu_gid,
+        )
+        if any(value is not None for value in settings) and any(
+            value is None for value in settings
+        ):
+            raise ValueError(
+                "sandbox storage root, base image, and QEMU UID/GID must be configured together"
+            )
+        if self.libvirt_qemu_uid == 0:
+            raise ValueError("libvirt QEMU UID must be unprivileged")
+        return self
 
 
 @dataclass(frozen=True)
@@ -631,7 +662,23 @@ def build_controller_api(config: ControllerTransportConfig) -> ControllerAPI:
             max_jobs_per_poll=config.max_jobs_per_poll,
         ),
     )
-    return ControllerAPI(service)
+    sandbox_manager = None
+    if config.sandbox_storage_root is not None:
+        # Local nested-VM settings are trusted host configuration only. The
+        # provisioning request remains an empty strict object.
+        provider = LocalNestedVmProvider(
+            LocalNestedVmConfig(
+                sandbox_root=config.sandbox_storage_root,
+                base_image=config.sandbox_base_image,
+                storage_mode=SandboxStorageMode.LIBVIRT_POOL,
+                libvirt_qemu_uid=config.libvirt_qemu_uid,
+                libvirt_qemu_gid=config.libvirt_qemu_gid,
+                libvirt_storage_parent_uid=config.sandbox_storage_parent_uid,
+            ),
+            LibvirtBackend(),
+        )
+        sandbox_manager = SandboxManager(service, provider)
+    return ControllerAPI(service, sandbox_manager)
 
 
 def _require_tls_file(path: Path, description: str, *, private: bool) -> Path:

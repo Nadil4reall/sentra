@@ -35,6 +35,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tls-private-key", required=True, type=Path)
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument(
+        "--sandbox-storage-root",
+        type=Path,
+        help=(
+            "trusted per-session libvirt pool parent; must be prepared "
+            "root:qemu-group mode 0710"
+        ),
+    )
+    parser.add_argument(
+        "--sandbox-base-image",
+        type=Path,
+        help="trusted read-only Ubuntu 24.04 qcow2 backing image",
+    )
+    parser.add_argument(
+        "--libvirt-qemu-uid",
+        type=int,
+        help="trusted numeric UID of the system-libvirt QEMU runtime user",
+    )
+    parser.add_argument(
+        "--libvirt-qemu-gid",
+        type=int,
+        help="trusted numeric GID of the system-libvirt QEMU runtime group",
+    )
+    parser.add_argument(
+        "--sandbox-storage-parent-uid",
+        type=int,
+        default=0,
+        help="expected owner UID of the dedicated storage parent (default: root)",
+    )
+    parser.add_argument(
         "--polling-interval-seconds",
         type=int,
         default=30,
@@ -160,6 +189,11 @@ def config_from_args(
         tls_certificate_path=args.tls_certificate,
         tls_private_key_path=args.tls_private_key,
         database_path=args.database,
+        sandbox_storage_root=args.sandbox_storage_root,
+        sandbox_base_image=args.sandbox_base_image,
+        libvirt_qemu_uid=args.libvirt_qemu_uid,
+        libvirt_qemu_gid=args.libvirt_qemu_gid,
+        sandbox_storage_parent_uid=args.sandbox_storage_parent_uid,
         bootstrap_credential=bootstrap,
         admin_credential=admin,
         polling_interval_seconds=args.polling_interval_seconds,

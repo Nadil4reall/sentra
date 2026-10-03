@@ -12,15 +12,18 @@ validation scope is complete, M6A provides the Controller/Agent protocol and sto
 core, M6B implements its TLS-only HTTPS transport and one-cycle M3 Agent, and M6C runs
 the existing M4 engine against validated Controller-stored profiles. M6D adds an
 administrator-authorized, target-isolated path from one stored M4 result to the fixed
-M5 `7.1.1` sandbox adapter and back to Controller-stored validation evidence.** SENTRA
-is not a production hardening platform, a CIS compliance scanner, or a claim of complete
-CIS enforcement. M1–M4 remain non-mutating. M5's intended mutation surface is limited
-to explicit adapters and approval gates; its two controlled executions and one
-deliberately non-mutating audit/plan are documented below. M6B/M6C add no remediation
-or arbitrary remote-command capability. M6D adds only constrained sandbox validation,
-not production deployment or generic execution. The scoped M6B, M6C, and M6D workflows
-have completed their recorded real-lab validations. This does not imply production
-readiness or completion of all M6 work.
+M5 `7.1.1` sandbox adapter and back to Controller-stored validation evidence. M6E-A
+adds sandbox lifecycle and persistence, M6E-B adds the bounded deterministic provider
+orchestration layer, and M6E-C enables and real-host validates automatic libvirt
+sandbox provisioning and destruction.** SENTRA is not a production hardening platform,
+a CIS compliance scanner, or a claim of complete CIS enforcement. M1–M4 remain
+non-mutating. M5's intended mutation surface is limited to explicit adapters and
+approval gates. M6B/M6C add no remediation or arbitrary remote-command capability.
+M6D adds only constrained sandbox validation, and M6E-C adds host-side sandbox
+infrastructure rather than production deployment or generic execution. The scoped
+M6B, M6C, M6D, and M6E-C workflows have completed their recorded real-lab validations.
+Guest-level automatic validation inside the M6E-C-created sandbox remains later M6E
+work, so this does not imply production readiness or completion of all M6 work.
 
 ## The research story
 
@@ -42,6 +45,10 @@ M6B Can one TLS-verified Agent run M3 and submit evidence?    SCOPED LAB VALIDAT
 M6C Can the Controller run existing M4 on that evidence?     STORED-PROFILE LAB VALIDATED
                 ↓
 M6D Can it authorize one constrained sandbox validation?     7.1.1 LAB VALIDATED
+                ↓
+M6E-A/B How is an automatic sandbox lifecycle safely bounded? LIFECYCLE/PROVIDER CORE
+                ↓
+M6E-C Can SENTRA create and destroy the real sandbox itself?  REAL LIBVIRT VALIDATED
 ```
 
 ## Project status
@@ -57,7 +64,10 @@ M6D Can it authorize one constrained sandbox validation?     7.1.1 LAB VALIDATED
 | M6B — HTTPS + M3 Agent | TLS-only Controller/Agent transport and deterministic local `PROFILE_TARGET` cycle | ✅ Scoped real-lab validation complete; not production-ready |
 | M6C — Controller-side M4 | Admin-only analysis of validated stored profiles with canonical report persistence and lineage | ✅ Implemented, automated-test validated, and real stored-profile lab validated; not production-ready |
 | M6D — constrained M5 orchestration | Admin-authorized, target-isolated, journaled `7.1.1` sandbox validation with strict result lineage | ✅ Implemented, automated-test validated, and scoped real-lab validated; not production-ready |
-| Later M6 work / M7–M8 | Automated sandbox lifecycle, broader orchestration, production deployment boundaries, dashboard/audit trail | Planned |
+| M6E-A — sandbox lifecycle core | Sandbox session model, persistence, administration API, lineage, and explicit state machine | ✅ Implemented and automated-test validated |
+| M6E-B — provider orchestration | Sealed `local_nested_vm` plan, deterministic provider identity, reconciliation, and fail-closed storage boundaries | ✅ Implemented and automated-test validated |
+| M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system` | ✅ Real Controller lifecycle validation complete; guest validation not yet connected |
+| Later M6E / M7–M8 | Automatic validation inside created sandbox, approval/deployment boundaries, re-verification, dashboard/audit workflow | Planned |
 
 ### Verified results at a glance
 
@@ -78,8 +88,9 @@ M6D Can it authorize one constrained sandbox validation?     7.1.1 LAB VALIDATED
 | M6B real-lab workflow | Development-CA-verified HTTPS; one enrollment reused; one `PROFILE_TARGET` job/profile completed |
 | M6C real-lab workflow | Protected M6B database copy; admin POST/list/item retrieval matched; SQL lineage `MATCH` |
 | M6D real-lab workflow | VM2 received no VM1 job; unprivileged run safely `not_tested`; privileged run `validated` with no metadata change required |
-| Focused M6/M5 validation | 253 passed |
-| Full regression suite after M6D | 443 passed, 0 failed; 5 existing warnings |
+| M6E-C real-host workflow | Automatic pool/overlay/domain creation, `RUNNING`, same-session replay, provider destroy, and immutable trusted-base preservation |
+| M6 automated tests | 278 passed |
+| Full regression suite after M6E-C implementation | 590 passed, 0 failed; 5 existing SWIG warnings |
 
 Automated tests establish software behavior. The recorded experiments now include
 normal and elevated M4 reports from one target, three initial M5 sandbox reports, and
@@ -88,8 +99,12 @@ protected copy of that Controller database and verified central M4 analysis, rep
 persistence, retrieval, and SQL lineage for the stored real profile. The M6D lab then
 tested target isolation, privilege refusal, journal ownership, and the fixed `7.1.1`
 sandbox-validation path. Its `validated` result describes the M5 empirical procedure,
-not CIS compliance. Automated results and operator observations are separate evidence
-sources; none is universal Ubuntu or production validation.
+not CIS compliance. The M6E-C lab then exercised the real Controller-side libvirt
+lifecycle: automatic pool and qcow2 overlay creation, domain start and inspection,
+idempotent same-session replay, provider destruction, and preservation of the trusted
+base image while running and after cleanup. It did not execute M6D validation inside
+that automatically created guest. Automated results and operator observations are
+separate evidence sources; none is universal Ubuntu or production validation.
 
 ## Main architecture
 

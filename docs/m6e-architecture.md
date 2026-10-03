@@ -4,16 +4,17 @@
 
 M6E-A adds the Controller-side model, persistence, administrative API, and explicit
 state machine needed to represent a disposable validation sandbox. M6E-B adds the
-narrow `SandboxManager` orchestration boundary and the first `local_nested_vm`
-provider design. The M6E-B implementation has been developed and tested on macOS with
-deterministic injected test backends; it has **not** provisioned a real virtual machine
-and the real Ubuntu KVM/libvirt appliance experiment has **not yet been executed**.
+narrow `SandboxManager` orchestration boundary and the `local_nested_vm` provider
+design. M6E-C implements the Python libvirt backend and has completed real Controller
+validation on the dedicated Ubuntu appliance for pool, overlay, domain, runtime-state,
+replay, and destroy behavior. Deterministic fake-backend tests on macOS remain separate
+from this operator-observed real-host evidence.
 
-The production-facing libvirt adapter is deliberately not enabled in M6E-B. Its lazy
-boundary reports a controlled provider-unavailable failure rather than falling back to
-a shell command, `virsh`, Docker, or an unverified substitute. A real provider cannot
-be claimed operational until the later Ubuntu SENTRA Appliance experiment implements
-and validates that boundary.
+The enabled backend uses the libvirt Python API with `qemu:///system`; it does not fall
+back to a shell command, `virsh`, Docker, or an unverified substitute. The experiment
+proves the bounded host-side provisioning and cleanup behavior described below. It
+does not establish guest-level readiness, automatic M6D validation dispatch,
+production readiness, or deployment authorization.
 
 The current Proof-of-Concept scope remains limited to control `7.1.1`. M6E does not
 change M1–M5 behavior, weaken the existing M6D validation boundary, connect a sandbox
@@ -22,7 +23,8 @@ SSH, shell, argv, script, generic command, generic provider-payload, or remote-e
 facility.
 
 M6E-A is lifecycle and evidence-lineage infrastructure; M6E-B is bounded provider and
-provisioning orchestration infrastructure. A sandbox session does not
+provisioning orchestration infrastructure; M6E-C implements and real-host validates
+the scoped libvirt backend. A sandbox session does not
 mean that a candidate is safe, that a control passes CIS assessment, or that production
 deployment is authorized.
 
@@ -59,10 +61,11 @@ candidate mutation must not turn the appliance control plane itself into the exp
 target.
 
 M6E-A supplies the Controller-side lifecycle foundation. M6E-B supplies the typed
-manager/provider/backend boundaries and deterministic reconciliation logic, but not an
-enabled real libvirt backend. Nested virtualization, empirically validated VM
-construction, snapshot handling, guest readiness checks beyond the provider runtime
-observation, quarantine enforcement, and disposal evidence remain future work.
+manager/provider/backend boundaries and deterministic reconciliation logic. M6E-C
+implements and real-host validates the scoped libvirt backend. Snapshot handling,
+guest readiness checks beyond the provider runtime observation, automatic M6D
+validation dispatch, quarantine enforcement, and broader disposal evidence remain
+future work.
 
 Sandbox infrastructure belongs on the SENTRA appliance, not on client Linux servers.
 A client runs the SENTRA Agent only. The provider does not clone a client VM or disk,
@@ -83,9 +86,10 @@ source_target_id
   -> later validation_result_id
 ```
 
-M6E-B may reconcile a requested session to one deterministic provider instance and
-record `READY`, but the final two relationships are deliberately not connected. Neither
-M6E-A nor M6E-B dispatches M6D validation work into the instance.
+M6E-C can reconcile a requested session to one deterministic provider instance and
+record `READY` after the provider confirms the domain is `RUNNING`. The final two
+relationships are deliberately not connected: automatic dispatch of M6D validation
+work into the instance has not been proven or enabled.
 
 Session creation revalidates the complete stored lineage:
 
@@ -200,9 +204,9 @@ destroy(sandbox_session_id)
 
 The input is a Controller-issued UUID, not a generic payload. The typed provider result
 contains only the provider type, opaque instance identity, and one closed runtime state:
-`PROVISIONING`, `RUNNING`, `STOPPED`, `FAILED`, or `MISSING`. M6E-B does not expose the
-`destroy` operation over HTTP; its presence defines the narrow provider contract for a
-later lifecycle phase.
+`PROVISIONING`, `RUNNING`, `STOPPED`, `FAILED`, or `MISSING`. M6E-C implements and
+real-host validates the provider `destroy` operation, but it remains unavailable over
+HTTP; no administrator destroy route was added.
 
 `LocalNestedVmProvider` derives the resource name deterministically as:
 
@@ -236,9 +240,8 @@ The `LocalNestedVmBackend` protocol receives only that sealed plan. This depende
 injection boundary permits deterministic fake backends to model success, existing-
 instance reconciliation, unavailable or failed provisioning, failed inspection, and
 non-running states on macOS without importing libvirt. `LibvirtBackend` loads the
-libvirt Python module lazily only when invoked. Its M6E-B methods remain intentionally
-disabled and fail with a controlled `SandboxProviderUnavailableError`; there is no
-shell-based or container fallback.
+libvirt Python module lazily only when invoked and uses the Python API for the scoped
+pool, volume, and domain operations. There is no shell-based or container fallback.
 
 ## Trusted image and disposable overlay model
 
@@ -254,7 +257,7 @@ per-session disposable qcow2 overlay
 temporary nested VM
 ```
 
-M6E-B does not download or bundle an image and does not copy a production client disk.
+M6E-C does not download or bundle an image and does not copy a production client disk.
 The provider validates the configured root, base image, session directory, and overlay
 using fail-closed ownership, type, link-count, permission, ancestry, and symlink checks.
 Runtime paths are constructed beneath the configured sandbox root from the derived
@@ -265,8 +268,9 @@ The provider marks the base image read-only in the backend plan and compares its
 inode, size, modification time, and mode before and after provisioning. A changed base
 image fails closed. The expected overlay is unique to the session directory and must be
 a regular, single-link, service-owned file that is not group/other writable. These
-checks express the M6E-B storage contract; empirical behavior of a real libvirt/qcow2
-implementation remains to be validated on the Ubuntu appliance.
+checks enforce the storage contract. The real Ubuntu Controller validation confirmed
+the tested ownership and mode expectations for the configured base image, session
+pool directory, and overlay; see the M6E-C validation record below.
 
 ## Provisioning and deterministic reconciliation
 
@@ -341,8 +345,8 @@ The API request and session models do not accept:
 - a caller-selected sandbox instance identifier.
 
 `provider_type` is not an open dispatch string. It remains fixed to
-`local_nested_vm`; the real libvirt implementation behind that type is not enabled in
-M6E-B.
+`local_nested_vm`; the M6E-C implementation uses the Python libvirt API and does not
+add a generic provider selector or command execution path.
 
 ## Idempotency, storage, and fail-closed behavior
 
@@ -386,8 +390,9 @@ experimental meaning.
 ## Security and lifecycle boundaries
 
 - M6E-A never creates a VM and never connects to a target or sandbox.
-- M6E-B defines provider/orchestration behavior but has not executed real VM
-  provisioning; its production libvirt adapter remains disabled.
+- M6E-C has real-host evidence for the scoped libvirt provider lifecycle, but
+  guest-level readiness and automatic sandbox-to-M6D validation dispatch are not yet
+  proven.
 - It does not add a Controller-to-Agent action or modify the M6D Agent protocol.
 - It does not invoke M5, dispatch a validation job, or perform remediation.
 - It accepts neither arbitrary provider configuration nor executable material; all VM
@@ -412,44 +417,60 @@ explicitly define any minimal state reproduced and prevent credentials, keys, to
 personal data, and unrelated target files from entering the sandbox by default. Full
 production filesystem cloning is not part of this design.
 
-## macOS validation boundary
+## macOS automated-test boundary
 
-M6E-B's current development and automated-test environment is macOS. Deterministic
-fake providers/backends exercise orchestration and retry decisions without requiring
-KVM, libvirt, an Ubuntu guest, or any VM mutation. This validates the closed data and
-state-machine boundaries in scope; it does not empirically validate nested
-virtualization, libvirt domain construction, qcow2 behavior, network isolation, guest
-boot, or teardown on an appliance.
+Deterministic fake providers/backends exercise orchestration and retry decisions on
+macOS without requiring KVM, libvirt, an Ubuntu guest, or VM mutation. These tests
+validate the closed data and state-machine boundaries; the separate real Controller
+validation below supplies host-side libvirt evidence. Neither test environment proves
+guest-level readiness or full M6E completion.
 
-The real nested KVM/libvirt appliance test is **not yet executed**. Accordingly, M6E-B
-must not be described as automatic VM provisioning validated in a real environment,
-production-ready sandboxing, or completion of full M6E.
+## M6E-C real Controller validation
 
-## Real appliance integration and later work
+The real M6E-C validation used an Ubuntu 24.04 Controller with libvirt 10.0.0 and
+QEMU 8.2.2 through `qemu:///system`. The exact Mac source used for review was
+SHA-256-matched against the Controller source used for the experiment. The Controller
+created the dedicated pool automatically, created a qcow2 overlay backed by the
+trusted Ubuntu 24.04 base image, defined and started the domain, and observed the
+domain reach `RUNNING`.
 
-The next provider-integration experiment must occur on the dedicated Ubuntu SENTRA
-Appliance, not on a client Agent host. It must implement the currently disabled
-libvirt backend using the sealed plan and then verify:
+The following host-side properties were observed:
 
-- nested-virtualization capability and host prerequisites;
-- a trusted, versioned, sanitized Ubuntu 24.04 image or template;
-- creation of one real per-session qcow2 overlay without base-image mutation;
-- fixed domain configuration and network, process, storage, and management-plane
-  isolation;
-- deterministic provider identity and existing-instance reconciliation after a
-  Controller interruption;
-- guest boot/readiness, timeout, failure, snapshot, and console-recovery behavior;
-- quarantine containment and explicit operator release policy;
-- deterministic teardown and disposal evidence;
-- resource quotas, concurrency, rate limiting, and denial-of-service controls; and
-- secret-exclusion and minimal-state reproduction rules.
+- dynamic AppArmor confinement was active and enforcing;
+- the static DAC label used the planned numeric UID/GID with `relabel="no"`;
+- the configured sandbox root was `root:kvm` mode `0710`;
+- the per-session pool directory was `libvirt-qemu:kvm` mode `0750`;
+- the disposable overlay was `libvirt-qemu:kvm` mode `0600`;
+- the trusted base image remained `root:root` mode `0444` while the VM ran;
+- the base image SHA-256 remained
+  `6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2`;
+- same-session provisioning replay was idempotent; and
+- provider destroy removed the domain, pool, and session directory while preserving
+  the base image's ownership, mode, and SHA-256.
 
-A later M6E step must separately bind a `READY` session to one constrained M6D
-`VALIDATE_CONTROL` job for `7.1.1`. M6E-B does not perform that connection, run M5,
-execute remediation, or automatically turn validation evidence into a CIS compliance
-verdict.
+This is operator-observed evidence for the scoped Controller/libvirt lifecycle, not
+proof of a guest agent, guest readiness, or validation execution. In particular:
+
+- guest-level readiness beyond host-side domain `RUNNING` is not yet proven;
+- automatic sandbox-to-M6D `VALIDATE_CONTROL` dispatch is not yet proven or enabled;
+- sandbox validation is not a CIS compliance result;
+- no remediation or production deployment is automatically applied or authorized; and
+- no generic SSH, remote shell, or command execution exists or is introduced.
+
+## Remaining real-appliance work
+
+Further testing on the dedicated Ubuntu SENTRA Appliance—not a client Agent host—must
+address guest boot/readiness, timeout and failure handling, snapshot and console
+recovery, quarantine containment and release policy, and evidence for those behaviors.
+Resource quotas, concurrency, rate limiting, and denial-of-service controls also
+remain future work, as do secret-exclusion and minimal-state reproduction rules.
+
+A later M6E step must separately implement and validate binding a `READY` session to
+one constrained M6D `VALIDATE_CONTROL` job for `7.1.1`. M6E-C does not perform that
+connection, run M5, execute remediation, or automatically turn validation evidence
+into a CIS compliance verdict.
 
 Production certificate and credential lifecycle, encrypted/high-availability storage,
 hardware-backed key custody, a production concurrency model, full audit retention,
-multi-provider support, broader control coverage, real destroy/close orchestration,
+multi-provider support, broader control coverage, HTTP destroy/close orchestration,
 and the Dashboard also remain future work.

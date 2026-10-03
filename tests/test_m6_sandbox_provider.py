@@ -859,9 +859,7 @@ def test_local_provider_rejects_backend_observation_for_another_plan_hash(
         provider.provision(uuid4())
 
 
-def test_libvirt_is_loaded_lazily_and_unavailability_is_controlled(
-    tmp_path: Path,
-) -> None:
+def test_libvirt_is_loaded_lazily_and_unavailability_is_controlled() -> None:
     module_requests: list[str] = []
 
     def unavailable_loader(module_name: str) -> object:
@@ -869,14 +867,13 @@ def test_libvirt_is_loaded_lazily_and_unavailability_is_controlled(
         raise ModuleNotFoundError("raw host import detail")
 
     backend = LibvirtBackend(module_loader=unavailable_loader)
-    provider, _, _ = _local_provider_fixture(tmp_path, backend)
     assert module_requests == []
 
     with pytest.raises(
         SandboxProviderUnavailableError,
         match="libvirt backend is unavailable",
     ):
-        provider.provision(uuid4())
+        backend._load()
     assert module_requests == ["libvirt"]
 
 
