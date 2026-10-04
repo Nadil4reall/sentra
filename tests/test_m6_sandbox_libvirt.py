@@ -285,6 +285,30 @@ def _provider_and_backend(
     return provider, backend, module, base
 
 
+def _validate_domain_xml(plan: LocalNestedVmPlan, xml: str) -> ET.Element:
+    class StaticDomain:
+        def name(self) -> str:
+            return plan.sandbox_instance_id
+
+        def XMLDesc(self, flags: int) -> str:
+            assert flags == 0
+            return xml
+
+    return LibvirtBackend._domain_xml_identity(StaticDomain(), plan)
+
+
+def _libvirt_channel_source_path(
+    plan: LocalNestedVmPlan,
+    domain_id: str = "42",
+    *,
+    base: str = "/run/libvirt/qemu/channel",
+    domain_component: str | None = None,
+    filename: str = "org.sentra.validation.0",
+) -> str:
+    short_name = domain_component or plan.sandbox_instance_id[:20]
+    return f"{base}/{domain_id}-{short_name}/{filename}"
+
+
 def test_backend_import_is_lazy_and_connects_only_to_system_uri(
     tmp_path: Path,
 ) -> None:
@@ -410,6 +434,15 @@ def test_domain_xml_is_fixed_deterministic_and_contains_no_guest_secrets(
     network = root.find("devices/interface/source")
     assert network.get("network") == "default"
     assert root.find("devices/interface/model").get("type") == "virtio"
+    channels = root.findall("devices/channel")
+    assert len(channels) == 1
+    assert channels[0].attrib == {"type": "unix"}
+    assert len(channels[0].findall("target")) == 1
+    assert channels[0].find("target").attrib == {
+        "type": "virtio",
+        "name": "org.sentra.validation.0",
+    }
+    assert channels[0].find("source") is None
     balloon = root.find("devices/memballoon")
     assert balloon is not None
     assert balloon.attrib == {"model": "none"}
@@ -418,6 +451,231 @@ def test_domain_xml_is_fixed_deterministic_and_contains_no_guest_secrets(
     serialized = ET.tostring(root, encoding="unicode").lower()
     for sensitive in ("password", "token", "cloud-init", "ssh-rsa"):
         assert sensitive not in serialized
+
+
+@pytest.mark.parametrize("state", ["connected", "disconnected"])
+def test_valid_libvirt_normalized_validation_channel_is_accepted(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    devices = root.find("devices")
+    channel = root.find("devices/channel")
+    assert devices is not None and channel is not None
+    root.set("id", "42")
+
+    source = ET.Element(
+        "source",
+        {
+            "mode": "bind",
+            "path": _libvirt_channel_source_path(plan),
+        },
+    )
+    channel.insert(0, source)
+    target = channel.find("target")
+    assert target is not None
+    target.set("state", state)
+    ET.SubElement(channel, "alias", {"name": "channel0"})
+    ET.SubElement(
+        channel,
+        "address",
+        {
+            "type": "virtio-serial",
+            "controller": "0",
+            "bus": "0",
+            "port": "1",
+        },
+    )
+    serial_controller = ET.SubElement(
+        devices,
+        "controller",
+        {"type": "virtio-serial", "index": "0"},
+    )
+    ET.SubElement(serial_controller, "alias", {"name": "virtio-serial0"})
+    ET.SubElement(
+        serial_controller,
+        "address",
+        {
+            "type": "pci",
+            "domain": "0x0000",
+            "bus": "0x02",
+            "slot": "0x00",
+            "function": "0x0",
+        },
+    )
+
+    normalized = _validate_domain_xml(plan, ET.tostring(root, encoding="unicode"))
+    assert normalized.find("devices/channel/target").get("state") == state
+
+
+def test_inactive_channel_without_source_is_accepted(tmp_path: Path) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    channel = root.find("devices/channel")
+    assert channel is not None
+    assert root.get("id") is None
+    assert channel.find("source") is None
+
+    _validate_domain_xml(plan, ET.tostring(root, encoding="unicode"))
+
+
+def test_libvirt_default_virtio_serial_controller_normalization_is_accepted(
+    tmp_path: Path,
+) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    devices = root.find("devices")
+    channel = root.find("devices/channel")
+    assert devices is not None and channel is not None
+    ET.SubElement(
+        channel,
+        "address",
+        {"type": "virtio-serial", "controller": "0", "bus": "0"},
+    )
+    ET.SubElement(
+        devices,
+        "controller",
+        {
+            "type": "virtio-serial",
+            "index": "0",
+            "ports": "16",
+            "vectors": "4",
+        },
+    )
+
+    _validate_domain_xml(plan, ET.tostring(root, encoding="unicode"))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_channel",
+        "duplicate_channel",
+        "wrong_channel_type",
+        "wrong_target_type",
+        "wrong_target_name",
+        "extra_channel_child",
+        "extra_channel_attribute",
+        "extra_target_attribute",
+        "unknown_target_state",
+        "wrong_source_mode",
+        "unexpected_source_type",
+        "missing_domain_id",
+        "wrong_runtime_id",
+        "wrong_short_domain_name",
+        "wrong_base_directory",
+        "wrong_channel_filename",
+        "extra_source_child",
+        "duplicate_source",
+    ],
+)
+def test_invalid_validation_channel_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    devices = root.find("devices")
+    channel = root.find("devices/channel")
+    assert devices is not None and channel is not None
+    root.set("id", "42")
+    target = channel.find("target")
+    assert target is not None
+    valid_path = _libvirt_channel_source_path(plan)
+
+    if mutation == "missing_channel":
+        devices.remove(channel)
+    elif mutation == "duplicate_channel":
+        devices.append(ET.fromstring(ET.tostring(channel, encoding="unicode")))
+    elif mutation == "wrong_channel_type":
+        channel.set("type", "tcp")
+    elif mutation == "wrong_target_type":
+        target.set("type", "serial")
+    elif mutation == "wrong_target_name":
+        target.set("name", "org.example.other.0")
+    elif mutation == "extra_channel_child":
+        ET.SubElement(channel, "protocol", {"type": "raw"})
+    elif mutation == "extra_channel_attribute":
+        channel.set("path", "/tmp/caller-controlled.sock")
+    elif mutation == "extra_target_attribute":
+        target.set("path", "/tmp/caller-controlled.sock")
+    elif mutation == "unknown_target_state":
+        target.set("state", "listening")
+    elif mutation == "wrong_source_mode":
+        ET.SubElement(
+            channel,
+            "source",
+            {"mode": "connect", "path": valid_path},
+        )
+    elif mutation == "unexpected_source_type":
+        ET.SubElement(
+            channel,
+            "source",
+            {"mode": "bind", "type": "unix", "path": valid_path},
+        )
+    elif mutation == "missing_domain_id":
+        root.attrib.pop("id")
+        ET.SubElement(channel, "source", {"mode": "bind", "path": valid_path})
+    elif mutation == "wrong_runtime_id":
+        ET.SubElement(
+            channel,
+            "source",
+            {"mode": "bind", "path": _libvirt_channel_source_path(plan, "43")},
+        )
+    elif mutation == "wrong_short_domain_name":
+        ET.SubElement(
+            channel,
+            "source",
+            {
+                "mode": "bind",
+                "path": _libvirt_channel_source_path(
+                    plan,
+                    domain_component="sentra-sbx-untrusted",
+                ),
+            },
+        )
+    elif mutation == "wrong_base_directory":
+        ET.SubElement(
+            channel,
+            "source",
+            {
+                "mode": "bind",
+                "path": _libvirt_channel_source_path(
+                    plan,
+                    base="/var/lib/libvirt/qemu/channel/target",
+                ),
+            },
+        )
+    elif mutation == "wrong_channel_filename":
+        ET.SubElement(
+            channel,
+            "source",
+            {
+                "mode": "bind",
+                "path": _libvirt_channel_source_path(
+                    plan,
+                    filename="org.sentra.validation.1",
+                ),
+            },
+        )
+    elif mutation == "extra_source_child":
+        source = ET.SubElement(
+            channel,
+            "source",
+            {"mode": "bind", "path": valid_path},
+        )
+        ET.SubElement(source, "unexpected")
+    else:
+        ET.SubElement(channel, "source", {"mode": "bind", "path": valid_path})
+        ET.SubElement(channel, "source", {"mode": "bind", "path": valid_path})
+
+    with pytest.raises(SandboxProviderSecurityError, match="channel"):
+        _validate_domain_xml(plan, ET.tostring(root, encoding="unicode"))
 
 
 @pytest.mark.parametrize(
@@ -768,6 +1026,78 @@ def test_real_libvirt_q35_normalization_is_accepted_when_policy_matches(
     balloon.set("model", "none")
 
     LibvirtBackend._validate_q35_normalized_devices(devices)
+
+
+def test_unsupported_controller_remains_rejected(tmp_path: Path) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    devices = root.find("devices")
+    assert devices is not None
+    ET.SubElement(devices, "controller", {"type": "scsi", "index": "0"})
+
+    with pytest.raises(
+        SandboxProviderSecurityError,
+        match="controller is not an allowed virtual model",
+    ):
+        LibvirtBackend._validate_q35_normalized_devices(devices)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_index",
+        "unexpected_model",
+        "unexpected_attribute",
+        "unexpected_child",
+        "bad_address",
+        "duplicate_controller",
+    ],
+)
+def test_invalid_virtio_serial_controller_normalization_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    provider, _, _, _ = _provider_and_backend(tmp_path)
+    plan = provider._plan(uuid4(), prepare_directory=False)
+    root = ET.fromstring(LibvirtBackend._domain_xml(plan))
+    devices = root.find("devices")
+    assert devices is not None
+    controller = ET.SubElement(
+        devices,
+        "controller",
+        {"type": "virtio-serial", "index": "0"},
+    )
+
+    if mutation == "wrong_index":
+        controller.set("index", "1")
+    elif mutation == "unexpected_model":
+        controller.set("model", "virtio")
+    elif mutation == "unexpected_attribute":
+        controller.set("ports", "4096")
+    elif mutation == "unexpected_child":
+        ET.SubElement(controller, "serial")
+    elif mutation == "bad_address":
+        ET.SubElement(
+            controller,
+            "address",
+            {
+                "type": "usb",
+                "controller": "0",
+                "bus": "0",
+                "port": "1",
+            },
+        )
+    else:
+        devices.append(
+            ET.fromstring(ET.tostring(controller, encoding="unicode"))
+        )
+
+    with pytest.raises(
+        SandboxProviderSecurityError,
+        match="virtio-serial controller",
+    ):
+        LibvirtBackend._validate_q35_normalized_devices(devices)
 
 
 def test_libvirt_pc_q35_noble_normalization_is_accepted(

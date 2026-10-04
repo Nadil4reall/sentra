@@ -66,7 +66,7 @@ M6E-C Can SENTRA create and destroy the real sandbox itself?  REAL LIBVIRT VALID
 | M6D — constrained M5 orchestration | Admin-authorized, target-isolated, journaled `7.1.1` sandbox validation with strict result lineage | ✅ Implemented, automated-test validated, and scoped real-lab validated; not production-ready |
 | M6E-A — sandbox lifecycle core | Sandbox session model, persistence, administration API, lineage, and explicit state machine | ✅ Implemented and automated-test validated |
 | M6E-B — provider orchestration | Sealed `local_nested_vm` plan, deterministic provider identity, reconciliation, and fail-closed storage boundaries | ✅ Implemented and automated-test validated |
-| M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system` | ✅ Real Controller lifecycle validation complete; guest validation not yet connected |
+| M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system`; fixed `org.sentra.validation.0` channel normalization | ✅ Real Controller lifecycle and fixed-channel validation complete; guest consumer/validation not yet connected |
 | Later M6E / M7–M8 | Automatic validation inside created sandbox, approval/deployment boundaries, re-verification, dashboard/audit workflow | Planned |
 
 ### Verified results at a glance

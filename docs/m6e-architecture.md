@@ -7,8 +7,10 @@ state machine needed to represent a disposable validation sandbox. M6E-B adds th
 narrow `SandboxManager` orchestration boundary and the `local_nested_vm` provider
 design. M6E-C implements the Python libvirt backend and has completed real Controller
 validation on the dedicated Ubuntu appliance for pool, overlay, domain, runtime-state,
-replay, and destroy behavior. Deterministic fake-backend tests on macOS remain separate
-from this operator-observed real-host evidence.
+replay, and destroy behavior. A later M6 integration slice has also real-host validated
+the fixed SENTRA virtio-serial channel's libvirt normalization; it does not add a new
+canonical milestone. Deterministic fake-backend tests on macOS remain separate from
+this operator-observed real-host evidence.
 
 The enabled backend uses the libvirt Python API with `qemu:///system`; it does not fall
 back to a shell command, `virsh`, Docker, or an unverified substitute. The experiment
@@ -456,6 +458,50 @@ proof of a guest agent, guest readiness, or validation execution. In particular:
 - sandbox validation is not a CIS compliance result;
 - no remediation or production deployment is automatically applied or authorized; and
 - no generic SSH, remote shell, or command execution exists or is introduced.
+
+## Fixed validation-channel integration after M6E-C
+
+A subsequent M6 integration slice added one fixed Controller-to-sandbox channel to
+the libvirt domain XML. SENTRA-generated XML contains only the fixed target
+`org.sentra.validation.0`; SENTRA does not supply a Unix socket source path. The
+sealed `LocalNestedVmPlan` remains unchanged in scope: no host mounts, device
+passthrough, caller-defined cloud-init, SSH, QEMU guest agent, or generic
+shell/command/argv/script execution was added.
+
+On the Ubuntu 24.04 Controller (libvirt 10.0.0, QEMU 8.2.2, `qemu:///system`), live
+libvirt XML added a source at
+`/run/libvirt/qemu/channel/1-sentra-sbx-25b3d804-/org.sentra.validation.0`, target
+state `disconnected`, `channel0` alias, and virtio-serial address on controller 0,
+bus 0, port 1. The corresponding virtio-serial controller used index 0, alias
+`virtio-serial0`, and PCI address `0000:02:00.0`. Inactive XML omitted the source
+while retaining the fixed target and virtio-serial address.
+
+The initial validator failed closed on the real libvirt-generated source path. The
+normalization was then narrowed to accept the `/run/libvirt/qemu/channel/` form only
+when its runtime ID matches the live domain and its short domain-name component is
+derived from the expected SENTRA sandbox name using the observed first-20-character
+behavior. The channel basename and source mode are fixed; no arbitrary socket paths
+are accepted. `provider.inspect()` against the same already-running sandbox then
+succeeded and returned `RUNNING`. The disposable sandbox was subsequently destroyed
+through `LocalNestedVmProvider.destroy()`; its domain, pool, and session directory
+were removed, while the protected older session was untouched.
+
+After provisioning, inspection, and teardown, the trusted base image remained
+`root:root` mode `0444`, with SHA-256
+`6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2`.
+Automated verification on the Mac reported 79 libvirt tests and 58 provider tests
+passing; the full suite reported 619 passed with five existing PyMuPDF/SWIG warnings.
+`py_compile` and `git diff --check` passed, and the forbidden-execution scan of
+`src/controller` had no matches.
+
+This validates host-side channel definition and normalization only. It does not show
+that target facts are sent through the channel, that a guest consumes it, that a
+Sandbox Runner exists, or that M5/M6D validation runs inside the guest. It does not
+establish CIS compliance, authorize production deployment, or prove that the sandbox
+perfectly reproduces a target system. The next integration work remains derivation of
+minimal typed target context, a constrained guest-side Sandbox Runner, and invocation
+of the existing allowlisted M5 validator with evidence returned through the normal
+approval boundary.
 
 ## Remaining real-appliance work
 

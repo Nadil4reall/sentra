@@ -41,6 +41,7 @@ from src.controller.service import (
 _RESOURCE_PREFIX = "sentra-sbx-"
 _POOL_PREFIX = "sentra-pool-"
 _OVERLAY_FILENAME = "root.qcow2"
+_SENTRA_VALIDATION_CHANNEL_TARGET = "org.sentra.validation.0"
 _DOMAIN_NAMESPACE = UUID("3f928c87-cb68-49d7-b17a-18d3131958dc")
 _DOMAIN_METADATA_NAMESPACE = "urn:sentra:sandbox:v1"
 _INSTANCE_PATTERN = r"^sentra-sbx-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -1123,6 +1124,12 @@ class LibvirtBackend:
         interface = ET.SubElement(devices, "interface", {"type": "network"})
         ET.SubElement(interface, "source", {"network": plan.network})
         ET.SubElement(interface, "model", {"type": "virtio"})
+        channel = ET.SubElement(devices, "channel", {"type": "unix"})
+        ET.SubElement(
+            channel,
+            "target",
+            {"type": "virtio", "name": _SENTRA_VALIDATION_CHANNEL_TARGET},
+        )
         ET.SubElement(devices, "controller", {"type": "usb", "model": "none"})
         ET.SubElement(devices, "memballoon", {"model": "none"})
         ET.SubElement(
@@ -1529,6 +1536,11 @@ class LibvirtBackend:
         if devices is None:
             raise SandboxProviderSecurityError("libvirt domain devices are missing")
         LibvirtBackend._validate_q35_normalized_devices(devices)
+        LibvirtBackend._validate_sentra_validation_channel(
+            devices,
+            plan,
+            domain_id=root.get("id"),
+        )
 
         disks = devices.findall("disk")
         interfaces = devices.findall("interface")
@@ -1609,6 +1621,114 @@ class LibvirtBackend:
         return root
 
     @staticmethod
+    def _validate_sentra_validation_channel(
+        devices: ET.Element,
+        plan: LocalNestedVmPlan,
+        *,
+        domain_id: str | None,
+    ) -> None:
+        """Validate SENTRA's single fixed, private virtio-serial channel."""
+
+        channels = devices.findall("channel")
+        if len(channels) != 1:
+            raise SandboxProviderSecurityError(
+                "libvirt domain must contain exactly one SENTRA validation channel"
+            )
+
+        channel = channels[0]
+        children = list(channel)
+        child_names = [child.tag for child in children]
+        targets = [child for child in children if child.tag == "target"]
+        sources = [child for child in children if child.tag == "source"]
+        aliases = [child for child in children if child.tag == "alias"]
+        addresses = [child for child in children if child.tag == "address"]
+        if (
+            channel.attrib != {"type": "unix"}
+            or (channel.text or "").strip()
+            or any(
+                name not in {"source", "target", "alias", "address"}
+                for name in child_names
+            )
+            or len(targets) != 1
+            or len(sources) > 1
+            or len(aliases) > 1
+            or len(addresses) > 1
+        ):
+            raise SandboxProviderSecurityError(
+                "libvirt SENTRA validation channel structure is not permitted"
+            )
+
+        target = targets[0]
+        target_attributes = target.attrib
+        target_state = target_attributes.get("state")
+        if (
+            target_attributes.get("type") != "virtio"
+            or target_attributes.get("name") != _SENTRA_VALIDATION_CHANNEL_TARGET
+            or set(target_attributes) - {"type", "name", "state"}
+            or target_state not in {None, "connected", "disconnected"}
+            or list(target)
+            or (target.text or "").strip()
+        ):
+            raise SandboxProviderSecurityError(
+                "libvirt SENTRA validation channel target does not match policy"
+            )
+
+        if sources:
+            source = sources[0]
+            expected_path = None
+            if domain_id is not None and re.fullmatch(
+                r"[1-9][0-9]*", domain_id
+            ):
+                expected_path = (
+                    "/run/libvirt/qemu/channel/"
+                    f"{domain_id}-{plan.sandbox_instance_id[:20]}/"
+                    f"{_SENTRA_VALIDATION_CHANNEL_TARGET}"
+                )
+            if (
+                set(source.attrib) != {"mode", "path"}
+                or source.get("mode") != "bind"
+                or expected_path is None
+                or source.get("path") != expected_path
+                or list(source)
+                or (source.text or "").strip()
+            ):
+                raise SandboxProviderSecurityError(
+                    "libvirt SENTRA validation channel source is not permitted"
+                )
+
+        if aliases:
+            alias = aliases[0]
+            if (
+                set(alias.attrib) != {"name"}
+                or re.fullmatch(r"channel[0-9]+", alias.get("name", "")) is None
+                or list(alias)
+                or (alias.text or "").strip()
+            ):
+                raise SandboxProviderSecurityError(
+                    "libvirt SENTRA validation channel alias is not normalized"
+                )
+
+        if addresses:
+            address = addresses[0]
+            expected_address = {
+                "type": "virtio-serial",
+                "controller": "0",
+                "bus": "0",
+            }
+            allowed_address_forms = (
+                expected_address,
+                {**expected_address, "port": "1"},
+            )
+            if (
+                address.attrib not in allowed_address_forms
+                or list(address)
+                or (address.text or "").strip()
+            ):
+                raise SandboxProviderSecurityError(
+                    "libvirt SENTRA validation channel address is not normalized"
+                )
+
+    @staticmethod
     def _validate_q35_normalized_devices(devices: ET.Element) -> None:
         """Validate security-relevant devices after libvirt Q35 normalization."""
 
@@ -1616,6 +1736,7 @@ class LibvirtBackend:
             "disk",
             "interface",
             "controller",
+            "channel",
             "memballoon",
             "input",
             "emulator",
@@ -1671,6 +1792,7 @@ class LibvirtBackend:
                 )
 
         usb_controllers = []
+        virtio_serial_controllers = []
         for controller in devices.findall("controller"):
             kind = controller.get("type")
             model = controller.get("model")
@@ -1706,6 +1828,70 @@ class LibvirtBackend:
                     )
                 continue
 
+            if kind == "virtio-serial":
+                if (
+                    controller.attrib
+                    not in (
+                        {"type": "virtio-serial", "index": "0"},
+                        {
+                            "type": "virtio-serial",
+                            "index": "0",
+                            "ports": "16",
+                            "vectors": "4",
+                        },
+                    )
+                    or model is not None
+                ):
+                    raise SandboxProviderSecurityError(
+                        "libvirt virtio-serial controller does not match SENTRA policy"
+                    )
+                controller_children = list(controller)
+                aliases = [child for child in controller_children if child.tag == "alias"]
+                addresses = [
+                    child for child in controller_children if child.tag == "address"
+                ]
+                if (
+                    any(
+                        child.tag not in {"alias", "address"}
+                        for child in controller_children
+                    )
+                    or len(aliases) > 1
+                    or len(addresses) > 1
+                    or (controller.text or "").strip()
+                ):
+                    raise SandboxProviderSecurityError(
+                        "libvirt virtio-serial controller children are not normalized"
+                    )
+                if aliases and (
+                    set(aliases[0].attrib) != {"name"}
+                    or re.fullmatch(
+                        r"virtio-serial[0-9]+", aliases[0].get("name", "")
+                    )
+                    is None
+                    or list(aliases[0])
+                    or (aliases[0].text or "").strip()
+                ):
+                    raise SandboxProviderSecurityError(
+                        "libvirt virtio-serial controller alias is not normalized"
+                    )
+                if addresses and (
+                    addresses[0].attrib
+                    != {
+                        "type": "pci",
+                        "domain": "0x0000",
+                        "bus": "0x02",
+                        "slot": "0x00",
+                        "function": "0x0",
+                    }
+                    or list(addresses[0])
+                    or (addresses[0].text or "").strip()
+                ):
+                    raise SandboxProviderSecurityError(
+                        "libvirt virtio-serial controller PCI address is not normalized"
+                    )
+                virtio_serial_controllers.append(controller)
+                continue
+
             raise SandboxProviderSecurityError(
                 "libvirt domain controller is not an allowed virtual model"
             )
@@ -1713,6 +1899,10 @@ class LibvirtBackend:
         if len(usb_controllers) != 1:
             raise SandboxProviderSecurityError(
                 "libvirt domain must have exactly one disabled USB controller"
+            )
+        if len(virtio_serial_controllers) > 1:
+            raise SandboxProviderSecurityError(
+                "libvirt domain contains multiple virtio-serial controllers"
             )
 
         for input_device in devices.findall("input"):
