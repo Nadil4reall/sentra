@@ -36,12 +36,12 @@ from src.controller.service import (
     ControllerConflictError,
     ControllerService,
 )
+from src.sandbox_protocol.models import SENTRA_VALIDATION_CHANNEL_NAME
 
 
 _RESOURCE_PREFIX = "sentra-sbx-"
 _POOL_PREFIX = "sentra-pool-"
 _OVERLAY_FILENAME = "root.qcow2"
-_SENTRA_VALIDATION_CHANNEL_TARGET = "org.sentra.validation.0"
 _DOMAIN_NAMESPACE = UUID("3f928c87-cb68-49d7-b17a-18d3131958dc")
 _DOMAIN_METADATA_NAMESPACE = "urn:sentra:sandbox:v1"
 _INSTANCE_PATTERN = r"^sentra-sbx-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -1128,7 +1128,7 @@ class LibvirtBackend:
         ET.SubElement(
             channel,
             "target",
-            {"type": "virtio", "name": _SENTRA_VALIDATION_CHANNEL_TARGET},
+            {"type": "virtio", "name": SENTRA_VALIDATION_CHANNEL_NAME},
         )
         ET.SubElement(devices, "controller", {"type": "usb", "model": "none"})
         ET.SubElement(devices, "memballoon", {"model": "none"})
@@ -1663,7 +1663,7 @@ class LibvirtBackend:
         target_state = target_attributes.get("state")
         if (
             target_attributes.get("type") != "virtio"
-            or target_attributes.get("name") != _SENTRA_VALIDATION_CHANNEL_TARGET
+            or target_attributes.get("name") != SENTRA_VALIDATION_CHANNEL_NAME
             or set(target_attributes) - {"type", "name", "state"}
             or target_state not in {None, "connected", "disconnected"}
             or list(target)
@@ -1682,7 +1682,7 @@ class LibvirtBackend:
                 expected_path = (
                     "/run/libvirt/qemu/channel/"
                     f"{domain_id}-{plan.sandbox_instance_id[:20]}/"
-                    f"{_SENTRA_VALIDATION_CHANNEL_TARGET}"
+                    f"{SENTRA_VALIDATION_CHANNEL_NAME}"
                 )
             if (
                 set(source.attrib) != {"mode", "path"}

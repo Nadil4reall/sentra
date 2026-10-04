@@ -2,37 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
-
 from src.sandbox_validator.models import CompatibilityReference
+from src.sandbox_protocol.models import (
+    SANDBOX_CONTEXT_CONTROL_ID,
+    SANDBOX_CONTEXT_VERSION,
+    PasswdSourceState,
+    SandboxContextManifest,
+)
 from src.target_profiler.models import FactStatus, TargetProfile
 
 
-SANDBOX_CONTEXT_CONTROL_ID = "7.1.1"
-
-
-class StrictSandboxContextModel(BaseModel):
-    """Immutable context records that reject undocumented fields."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class PasswdSourceState(StrictSandboxContextModel):
-    """The allowlisted M3 metadata needed to model control 7.1.1."""
-
-    passwd_file_mode: StrictStr = Field(pattern=r"^[0-7]{4}$")
-    passwd_file_owner_uid: StrictInt = Field(ge=0)
-    passwd_file_group_gid: StrictInt = Field(ge=0)
-
-
-class SandboxContextManifest(StrictSandboxContextModel):
-    """Versioned guest-bound context containing no general target profile data."""
-
-    context_version: Literal["1"]
-    control_id: Literal["7.1.1"]
-    source_state: PasswdSourceState
+__all__ = [
+    "SANDBOX_CONTEXT_CONTROL_ID",
+    "PasswdSourceState",
+    "SandboxContextManifest",
+    "derive_sandbox_context",
+]
 
 
 def derive_sandbox_context(
@@ -77,7 +62,7 @@ def derive_sandbox_context(
         values[fact_name] = fact.value
 
     return SandboxContextManifest(
-        context_version="1",
-        control_id="7.1.1",
+        context_version=SANDBOX_CONTEXT_VERSION,
+        control_id=SANDBOX_CONTEXT_CONTROL_ID,
         source_state=PasswdSourceState(**values),
     )
