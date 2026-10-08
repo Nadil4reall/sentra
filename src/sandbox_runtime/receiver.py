@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -23,6 +24,10 @@ SENTRA_VALIDATION_DEVICE_PATH = (
     f"/dev/virtio-ports/{SENTRA_VALIDATION_CHANNEL_NAME}"
 )
 _FRAME_HEADER_BYTES = 4
+_FIRST_FRAME_STARTUP_TIMEOUT_SECONDS = 30.0
+_FIRST_FRAME_RETRY_INTERVAL_SECONDS = 0.05
+_monotonic = time.monotonic
+_sleep = time.sleep
 
 
 class SandboxReceiverIOError(OSError):
@@ -56,6 +61,43 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
         if not isinstance(chunk, bytes) or len(chunk) > remaining:
             raise SandboxReceiverIOError("invalid validation channel read result")
         chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _read_first_frame_header(stream: BinaryIO) -> bytes:
+    """Wait briefly for the first byte, then read the header strictly.
+
+    Empty reads are retried only while no header byte has arrived. Once the
+    header starts, EOF is an incomplete frame and follows the normal rejection
+    path. The deadline and retry delay are fixed module constants.
+    """
+
+    deadline = _monotonic() + _FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
+    chunks = bytearray()
+    while len(chunks) < _FRAME_HEADER_BYTES:
+        if not chunks and _monotonic() >= deadline:
+            raise SandboxReceiverIOError("timed out waiting for validation context")
+
+        remaining = _FRAME_HEADER_BYTES - len(chunks)
+        try:
+            chunk = stream.read(remaining)
+        except Exception:
+            raise SandboxReceiverIOError("failed to read validation channel") from None
+
+        if chunk == b"":
+            if chunks:
+                raise _IncompleteFrame
+            time_remaining = deadline - _monotonic()
+            if time_remaining <= 0:
+                raise SandboxReceiverIOError(
+                    "timed out waiting for validation context"
+                )
+            _sleep(min(_FIRST_FRAME_RETRY_INTERVAL_SECONDS, time_remaining))
+            continue
+        if not isinstance(chunk, bytes) or len(chunk) > remaining:
+            raise SandboxReceiverIOError("invalid validation channel read result")
+        chunks.extend(chunk)
+
     return bytes(chunks)
 
 
@@ -98,7 +140,7 @@ def receive_one_context(stream: BinaryIO) -> SandboxContextReceiveResult:
     """
 
     try:
-        header = _read_exact(stream, _FRAME_HEADER_BYTES)
+        header = _read_first_frame_header(stream)
     except _IncompleteFrame:
         return _send_rejection(stream, SandboxContextRejectionCode.INVALID_FRAME)
 

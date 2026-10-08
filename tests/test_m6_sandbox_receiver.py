@@ -27,6 +27,7 @@ from src.sandbox_protocol import (
     SandboxContextRejectionCode,
     decode_sandbox_acknowledgement_frame,
 )
+from src.sandbox_runtime import receiver as receiver_module
 from src.sandbox_runtime.receiver import (
     SENTRA_VALIDATION_DEVICE_PATH,
     SandboxContextReceiveResult,
@@ -75,6 +76,40 @@ class ChunkedDuplex:
         self.write_sizes.append(count)
         self.written.extend(data[:count])
         return count
+
+
+class InitialEmptyReads(ChunkedDuplex):
+    """Return a fixed number of pre-connection empty reads before frame bytes."""
+
+    def __init__(
+        self,
+        incoming: bytes,
+        *,
+        initial_empty_reads: int,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(incoming, **kwargs)
+        self.initial_empty_reads = initial_empty_reads
+
+    def read(self, size: int = -1) -> bytes:
+        if self.initial_empty_reads:
+            self.initial_empty_reads -= 1
+            self.read_sizes.append(size)
+            return b""
+        return super().read(size)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.delays: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.delays.append(seconds)
+        self.now += seconds
 
 
 def _manifest() -> SandboxContextManifest:
@@ -139,6 +174,82 @@ def test_valid_manifest_is_accepted_and_returned_unchanged() -> None:
     assert isinstance(result, SandboxContextReceiveResult)
     assert result.manifest == manifest
     _assert_ack(stream, status="accepted")
+
+
+def test_initial_empty_reads_before_first_header_byte_are_tolerated() -> None:
+    stream = InitialEmptyReads(
+        encode_sandbox_context_frame(_manifest()), initial_empty_reads=2
+    )
+
+    result = receive_one_context(stream)
+
+    assert result.manifest == _manifest()
+    assert stream.read_sizes[:2] == [_HEADER_BYTES, _HEADER_BYTES]
+    _assert_ack(stream, status="accepted")
+
+
+def test_initial_empty_reads_then_fragmented_header_and_payload_are_accepted() -> None:
+    stream = InitialEmptyReads(
+        encode_sandbox_context_frame(_manifest()),
+        initial_empty_reads=4,
+        read_limit=1,
+    )
+
+    result = receive_one_context(stream)
+
+    assert result.manifest == _manifest()
+    assert stream.read_sizes[:4] == [_HEADER_BYTES] * 4
+    assert stream.read_sizes[4:8] == [
+        _HEADER_BYTES,
+        _HEADER_BYTES - 1,
+        _HEADER_BYTES - 2,
+        _HEADER_BYTES - 3,
+    ]
+    _assert_ack(stream, status="accepted")
+
+
+def test_startup_timeout_fails_as_io_without_invalid_frame_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeClock()
+    monkeypatch.setattr(receiver_module, "_monotonic", clock.monotonic)
+    monkeypatch.setattr(receiver_module, "_sleep", clock.sleep)
+    stream = ChunkedDuplex(b"")
+
+    with pytest.raises(SandboxReceiverIOError, match="timed out"):
+        receive_one_context(stream)
+
+    assert stream.written == b""
+    assert clock.now == receiver_module._FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
+    assert len(stream.read_sizes) <= (
+        receiver_module._FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
+        / receiver_module._FIRST_FRAME_RETRY_INTERVAL_SECONDS
+    ) + 1
+    assert clock.delays
+    assert all(
+        delay <= receiver_module._FIRST_FRAME_RETRY_INTERVAL_SECONDS
+        for delay in clock.delays
+    )
+
+
+def test_eof_after_first_header_byte_is_immediately_invalid_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = ChunkedDuplex(b"\x00", read_limit=1)
+    monkeypatch.setattr(
+        receiver_module,
+        "_sleep",
+        lambda _seconds: pytest.fail("mid-header EOF must not be retried"),
+    )
+
+    result = receive_one_context(stream)
+
+    assert result.manifest is None
+    _assert_ack(
+        stream,
+        status="rejected",
+        reason_code=SandboxContextRejectionCode.INVALID_FRAME,
+    )
 
 
 def test_partial_header_reads_are_handled() -> None:
