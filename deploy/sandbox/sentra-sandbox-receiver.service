@@ -1,5 +1,5 @@
 [Unit]
-Description=SENTRA one-shot sandbox validation context receiver
+Description=SENTRA one-shot sandbox M5 validation session
 Requires=dev-virtio\x2dports-org.sentra.validation.0.device
 After=dev-virtio\x2dports-org.sentra.validation.0.device
 
@@ -8,6 +8,7 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/sentra
 Environment=PYTHONPATH=/opt/sentra
+EnvironmentFile=-/etc/sentra/sandbox-runtime.conf
 ExecStart=/opt/sentra/venv/bin/python -m src.sandbox_runtime
 Restart=no
 RemainAfterExit=no
@@ -20,7 +21,8 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-CapabilityBoundingSet=
+ReadWritePaths=/etc/passwd /var/backups/sentra/7.1.1
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH
 AmbientCapabilities=
 UMask=0077
 RestrictAddressFamilies=AF_UNIX
