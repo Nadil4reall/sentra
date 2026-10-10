@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -28,6 +30,37 @@ _FIRST_FRAME_STARTUP_TIMEOUT_SECONDS = 30.0
 _FIRST_FRAME_RETRY_INTERVAL_SECONDS = 0.05
 _monotonic = time.monotonic
 _sleep = time.sleep
+_LOG = logging.getLogger(__name__)
+_GUEST_STAGES = frozenset({
+    "device_open",
+    "header_wait",
+    "first_byte_received",
+    "header_complete",
+    "payload_read_start",
+    "payload_complete",
+    "context_decoded",
+    "ack_write_start",
+    "ack_write_complete",
+    "first_byte_timeout",
+    "header_incomplete",
+    "payload_incomplete",
+})
+
+
+def _diagnostic(stage: str) -> None:
+    if stage not in _GUEST_STAGES:
+        raise ValueError("unknown guest diagnostic stage")
+    timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+    _LOG.warning("%s guest %s", timestamp, stage)
+
+
+def _diagnostic_failure(error: BaseException) -> None:
+    timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+    _LOG.warning("%s guest failure=%s", timestamp, type(error).__name__)
 
 
 class SandboxReceiverIOError(OSError):
@@ -54,7 +87,8 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
         remaining = size - len(chunks)
         try:
             chunk = stream.read(remaining)
-        except Exception:
+        except Exception as error:
+            _diagnostic_failure(error)
             raise SandboxReceiverIOError("failed to read validation channel") from None
         if chunk == b"":
             raise _IncompleteFrame
@@ -74,30 +108,42 @@ def _read_first_frame_header(stream: BinaryIO) -> bytes:
 
     deadline = _monotonic() + _FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
     chunks = bytearray()
+    _diagnostic("header_wait")
     while len(chunks) < _FRAME_HEADER_BYTES:
         if not chunks and _monotonic() >= deadline:
-            raise SandboxReceiverIOError("timed out waiting for validation context")
+            error = SandboxReceiverIOError("timed out waiting for validation context")
+            _diagnostic("first_byte_timeout")
+            _diagnostic_failure(error)
+            raise error
 
         remaining = _FRAME_HEADER_BYTES - len(chunks)
         try:
             chunk = stream.read(remaining)
-        except Exception:
+        except Exception as error:
+            _diagnostic_failure(error)
             raise SandboxReceiverIOError("failed to read validation channel") from None
 
         if chunk == b"":
             if chunks:
+                _diagnostic("header_incomplete")
                 raise _IncompleteFrame
             time_remaining = deadline - _monotonic()
             if time_remaining <= 0:
-                raise SandboxReceiverIOError(
+                error = SandboxReceiverIOError(
                     "timed out waiting for validation context"
                 )
+                _diagnostic("first_byte_timeout")
+                _diagnostic_failure(error)
+                raise error
             _sleep(min(_FIRST_FRAME_RETRY_INTERVAL_SECONDS, time_remaining))
             continue
         if not isinstance(chunk, bytes) or len(chunk) > remaining:
             raise SandboxReceiverIOError("invalid validation channel read result")
+        if not chunks:
+            _diagnostic("first_byte_received")
         chunks.extend(chunk)
 
+    _diagnostic("header_complete")
     return bytes(chunks)
 
 
@@ -108,7 +154,8 @@ def _write_all(stream: BinaryIO, data: bytes) -> None:
     while offset < len(data):
         try:
             written = stream.write(data[offset:])
-        except Exception:
+        except Exception as error:
+            _diagnostic_failure(error)
             raise SandboxReceiverIOError(
                 "failed to write validation acknowledgement"
             ) from None
@@ -127,7 +174,9 @@ def _send_rejection(
         status="rejected",
         reason_code=reason_code,
     )
+    _diagnostic("ack_write_start")
     _write_all(stream, encode_sandbox_acknowledgement_frame(acknowledgement))
+    _diagnostic("ack_write_complete")
     return SandboxContextReceiveResult(manifest=None, acknowledgement=acknowledgement)
 
 
@@ -148,21 +197,27 @@ def receive_one_context(stream: BinaryIO) -> SandboxContextReceiveResult:
     if payload_size == 0 or payload_size > MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES:
         return _send_rejection(stream, SandboxContextRejectionCode.INVALID_FRAME)
 
+    _diagnostic("payload_read_start")
     try:
         payload = _read_exact(stream, payload_size)
     except _IncompleteFrame:
+        _diagnostic("payload_incomplete")
         return _send_rejection(stream, SandboxContextRejectionCode.INVALID_FRAME)
+    _diagnostic("payload_complete")
 
     try:
         manifest = decode_sandbox_context_frame(header + payload)
     except SandboxTransportError:
         return _send_rejection(stream, SandboxContextRejectionCode.INVALID_CONTEXT)
 
+    _diagnostic("context_decoded")
     acknowledgement = SandboxContextAcknowledgement(
         protocol_version=SANDBOX_PROTOCOL_VERSION,
         status="accepted",
     )
+    _diagnostic("ack_write_start")
     _write_all(stream, encode_sandbox_acknowledgement_frame(acknowledgement))
+    _diagnostic("ack_write_complete")
     return SandboxContextReceiveResult(
         manifest=manifest,
         acknowledgement=acknowledgement,

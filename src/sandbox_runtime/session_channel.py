@@ -8,7 +8,12 @@ from typing import BinaryIO
 from src.sandbox_m5_protocol.models import SandboxM5SessionResult
 from src.sandbox_m5_session import run_sandbox_m5_session
 
-from .receiver import SENTRA_VALIDATION_DEVICE_PATH, SandboxReceiverIOError
+from .receiver import (
+    SENTRA_VALIDATION_DEVICE_PATH,
+    SandboxReceiverIOError,
+    _diagnostic,
+    _diagnostic_failure,
+)
 
 
 def open_fixed_validation_channel_and_run_session(
@@ -22,12 +27,16 @@ def open_fixed_validation_channel_and_run_session(
     flags = os.O_RDWR | getattr(os, "O_NOCTTY", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(SENTRA_VALIDATION_DEVICE_PATH, flags)
-    except OSError:
+    except OSError as error:
+        _diagnostic_failure(error)
         raise SandboxReceiverIOError("could not open fixed validation channel") from None
+
+    _diagnostic("device_open")
 
     try:
         stream: BinaryIO = os.fdopen(descriptor, "r+b", buffering=0)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        _diagnostic_failure(error)
         try:
             os.close(descriptor)
         except OSError:

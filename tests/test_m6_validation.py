@@ -1733,3 +1733,288 @@ def test_validation_job_changed_authorization_replay_conflicts(
         ).fetchone()[0]
 
     assert count == 1
+
+
+# M6E real-SQLite tests: these do not start a VM or contact the target.
+def _sandbox_sqlite_fixture(tmp_path: Path):
+    from src.controller.models import SandboxSessionCreateRequest
+
+    database, repository, service = _controller(tmp_path)
+    enrollment, profile, report = _stored_profile_and_report(service)
+    session = service.create_sandbox_session(
+        _admin(),
+        target_id=enrollment.target_id,
+        profile_id=profile.profile_id,
+        compatibility_report_id=report.compatibility_report_id,
+        request=SandboxSessionCreateRequest(
+            request_id=uuid4(),
+            control_id="7.1.1",
+            administrator_sandbox_authorization_acknowledged=True,
+        ),
+    )
+    service.mark_provisioning(session.sandbox_session_id)
+    ready = service.mark_ready(
+        session.sandbox_session_id,
+        sandbox_instance_id=f"sentra-sbx-{session.sandbox_session_id}",
+    )
+    pending = service.create_validation_job(
+        _admin(), _job_request(enrollment, profile, report)
+    )
+    return database, repository, service, enrollment, ready, pending
+
+
+def test_sandbox_sqlite_reservation_and_evidence_survive_reopen(
+    tmp_path: Path,
+) -> None:
+    from src.controller.models import SandboxSessionStatus
+
+    database, repository, service, enrollment, ready, pending = (
+        _sandbox_sqlite_fixture(tmp_path)
+    )
+    job, validating = service.dispatch_sandbox_validation_job(
+        _admin(),
+        sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=pending.validation_job_id,
+    )
+    assert job.status is JobStatus.DISPATCHED
+    assert validating.status is SandboxSessionStatus.VALIDATING
+    assert validating.validation_started_at == job.dispatched_at
+
+    # Agent polling must never deliver a job already bound to a sandbox VM.
+    polled = service.poll_jobs(JobPollRequest(auth=_auth(enrollment))).jobs
+    assert all(
+        not isinstance(item, ValidationJobRecord)
+        or item.validation_job_id != pending.validation_job_id
+        for item in polled
+    )
+    stored = repository.get_validation_job(pending.validation_job_id)
+    assert stored is not None
+    assert stored.job.status is JobStatus.PENDING
+    assert stored.assigned_agent_id is None  # No fictional target Agent ownership.
+
+    payload, _ = _validation_payload(job, tmp_path / "m5-inert-fs")
+    completed = service.complete_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=job.validation_job_id, payload=payload,
+    )
+    assert completed.status is SandboxSessionStatus.COMPLETED
+    canonical = canonical_validation_payload_json(payload)
+    expected_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    reopened = SQLiteControllerRepository(database)
+    evidence = reopened.get_sandbox_validation_evidence(
+        sandbox_session_id=ready.sandbox_session_id
+    )
+    assert evidence == (payload, expected_hash)
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT status, result_sha256, payload_json "
+            "FROM sandbox_validation_executions WHERE sandbox_session_id = ?",
+            (str(ready.sandbox_session_id),),
+        ).fetchone()
+    assert row == ("COMPLETED", expected_hash, canonical)
+
+    # The same VM/job cannot be dispatched or completed a second time.
+    with pytest.raises(ControllerConflictError):
+        service.dispatch_sandbox_validation_job(
+            _admin(), sandbox_session_id=ready.sandbox_session_id,
+            validation_job_id=pending.validation_job_id,
+        )
+    with pytest.raises(ControllerConflictError):
+        service.complete_sandbox_validation_job(
+            _admin(), sandbox_session_id=ready.sandbox_session_id,
+            validation_job_id=pending.validation_job_id, payload=payload,
+        )
+
+
+def test_sandbox_sqlite_agent_claim_before_reservation_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _, repository, service, enrollment, ready, pending = (
+        _sandbox_sqlite_fixture(tmp_path)
+    )
+    jobs = service.poll_jobs(JobPollRequest(auth=_auth(enrollment))).jobs
+    assert any(
+        isinstance(job, ValidationJobRecord)
+        and job.validation_job_id == pending.validation_job_id
+        for job in jobs
+    )
+    with pytest.raises(ControllerConflictError):
+        service.dispatch_sandbox_validation_job(
+            _admin(), sandbox_session_id=ready.sandbox_session_id,
+            validation_job_id=pending.validation_job_id,
+        )
+    # The sandbox must remain READY, with no fabricated evidence record.
+    reloaded = repository.get_sandbox_session_by_id(ready.sandbox_session_id)
+    assert reloaded is not None
+    assert reloaded.status is ready.status
+    with sqlite3.connect(repository.path) as connection:
+        count = connection.execute(
+            "SELECT count(*) FROM sandbox_validation_executions"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_sandbox_sqlite_result_lineage_mismatch_is_atomic(
+    tmp_path: Path,
+) -> None:
+    from src.controller.models import SandboxSessionStatus
+
+    database, repository, service, _, ready, pending = (
+        _sandbox_sqlite_fixture(tmp_path)
+    )
+    job, _ = service.dispatch_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=pending.validation_job_id,
+    )
+    payload, _ = _validation_payload(job, tmp_path / "m5-inert-fs")
+    changed = payload.model_copy(update={"validation_job_id": uuid4()})
+    with pytest.raises(ControllerConflictError):
+        service.complete_sandbox_validation_job(
+            _admin(), sandbox_session_id=ready.sandbox_session_id,
+            validation_job_id=job.validation_job_id, payload=changed,
+        )
+    reloaded = repository.get_sandbox_session_by_id(ready.sandbox_session_id)
+    assert reloaded is not None
+    assert reloaded.status is SandboxSessionStatus.VALIDATING
+    with sqlite3.connect(database) as connection:
+        execution = connection.execute(
+            "SELECT status, payload_json, result_sha256 "
+            "FROM sandbox_validation_executions WHERE sandbox_session_id = ?",
+            (str(ready.sandbox_session_id),),
+        ).fetchone()
+    assert execution == ("DISPATCHED", None, None)
+
+
+def test_sandbox_sqlite_tampered_result_and_job_are_rejected(
+    tmp_path: Path,
+) -> None:
+    database, repository, service, _, ready, pending = (
+        _sandbox_sqlite_fixture(tmp_path)
+    )
+    job, _ = service.dispatch_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=pending.validation_job_id,
+    )
+    payload, _ = _validation_payload(job, tmp_path / "m5-inert-fs")
+    service.complete_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=job.validation_job_id, payload=payload,
+    )
+    original = repository.get_sandbox_validation_evidence(
+        sandbox_session_id=ready.sandbox_session_id
+    )
+    assert original is not None
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE sandbox_validation_executions SET result_sha256 = ? "
+            "WHERE sandbox_session_id = ?",
+            ("a" * 64, str(ready.sandbox_session_id)),
+        )
+    with pytest.raises(StorageConflictError):
+        repository.get_sandbox_validation_evidence(
+            sandbox_session_id=ready.sandbox_session_id
+        )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE sandbox_validation_executions SET result_sha256 = ? "
+            "WHERE sandbox_session_id = ?",
+            (original[1], str(ready.sandbox_session_id)),
+        )
+        row = connection.execute(
+            "SELECT job_json FROM sandbox_validation_executions "
+            "WHERE sandbox_session_id = ?",
+            (str(ready.sandbox_session_id),),
+        ).fetchone()
+        changed = json.loads(row[0])
+        changed["compatibility_override_reason"] = "unapproved new rationale"
+        connection.execute(
+            "UPDATE sandbox_validation_executions SET job_json = ? "
+            "WHERE sandbox_session_id = ?",
+            (json.dumps(changed), str(ready.sandbox_session_id)),
+        )
+    with pytest.raises(StorageConflictError):
+        repository.get_sandbox_validation_evidence(
+            sandbox_session_id=ready.sandbox_session_id
+        )
+
+
+def test_atomic_sandbox_job_creation_never_exposes_agent_claim_window(
+    tmp_path: Path,
+) -> None:
+    from src.controller.models import SandboxSessionStatus
+
+    database, repository, service, enrollment, ready, legacy_pending = (
+        _sandbox_sqlite_fixture(tmp_path)
+    )
+    request = ValidationJobCreateRequest(
+        request_id=uuid4(),
+        target_id=legacy_pending.target_id,
+        profile_id=legacy_pending.profile_id,
+        compatibility_report_id=legacy_pending.compatibility_report_id,
+        control_id="7.1.1",
+        administrator_approval_acknowledged=True,
+        compatibility_risk_acknowledged=(
+            legacy_pending.compatibility_risk_acknowledged
+        ),
+        compatibility_override_reason=(
+            legacy_pending.compatibility_override_reason
+        ),
+    )
+    dispatched, validating = service.create_and_dispatch_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id, request=request,
+    )
+    assert dispatched.status is JobStatus.DISPATCHED
+    assert validating.status is SandboxSessionStatus.VALIDATING
+    assert dispatched.dispatched_at == validating.validation_started_at
+    assert dispatched.request_id == request.request_id
+
+    # A polling Agent cannot claim a sandbox job, even on the first poll.
+    jobs = service.poll_jobs(JobPollRequest(auth=_auth(enrollment))).jobs
+    assert all(
+        not isinstance(item, ValidationJobRecord)
+        or item.validation_job_id != dispatched.validation_job_id
+        for item in jobs
+    )
+    stored = repository.get_validation_job(dispatched.validation_job_id)
+    assert stored is not None
+    assert stored.job.status is JobStatus.PENDING
+    assert stored.assigned_agent_id is None
+    payload, _ = _validation_payload(dispatched, tmp_path / "m5-atomic-fs")
+    completed = service.complete_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id,
+        validation_job_id=dispatched.validation_job_id, payload=payload,
+    )
+    assert completed.status is SandboxSessionStatus.COMPLETED
+    evidence = SQLiteControllerRepository(database).get_sandbox_validation_evidence(
+        sandbox_session_id=ready.sandbox_session_id
+    )
+    assert evidence is not None
+    assert evidence[0] == payload
+
+
+def test_atomic_sandbox_job_creation_rejects_second_job_without_partial_insert(
+    tmp_path: Path,
+) -> None:
+    database, _, service, _, ready, legacy = _sandbox_sqlite_fixture(tmp_path)
+    request = ValidationJobCreateRequest(
+        request_id=uuid4(), target_id=legacy.target_id,
+        profile_id=legacy.profile_id,
+        compatibility_report_id=legacy.compatibility_report_id,
+        control_id="7.1.1", administrator_approval_acknowledged=True,
+        compatibility_risk_acknowledged=legacy.compatibility_risk_acknowledged,
+        compatibility_override_reason=legacy.compatibility_override_reason,
+    )
+    service.create_and_dispatch_sandbox_validation_job(
+        _admin(), sandbox_session_id=ready.sandbox_session_id, request=request
+    )
+    with sqlite3.connect(database) as connection:
+        before = connection.execute("SELECT COUNT(*) FROM validation_jobs").fetchone()[0]
+    with pytest.raises(ControllerConflictError):
+        service.create_and_dispatch_sandbox_validation_job(
+            _admin(), sandbox_session_id=ready.sandbox_session_id,
+            request=request.model_copy(update={"request_id": uuid4()}),
+        )
+    with sqlite3.connect(database) as connection:
+        after = connection.execute("SELECT COUNT(*) FROM validation_jobs").fetchone()[0]
+    assert after == before

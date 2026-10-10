@@ -53,6 +53,7 @@ from src.controller.models import (
     ValidationJobCreateRequest,
     ValidationJobRecord,
     ValidationResultRecord,
+    ValidationResultPayload,
     ValidationResultSubmissionRequest,
 )
 from src.controller.security import (
@@ -822,13 +823,56 @@ class ControllerService:
         )
         return self._store_sandbox_transition(updated=updated)
 
-    def create_validation_job(
+
+    def dispatch_sandbox_validation_job(
+        self,
+        auth: AdminAuth,
+        *,
+        sandbox_session_id: UUID,
+        validation_job_id: UUID,
+    ) -> tuple[ValidationJobRecord, SandboxSessionRecord]:
+        """Authenticated Controller-only, atomic sandbox reservation."""
+        self._authenticate_admin(auth)
+        try:
+            return self._repository.dispatch_sandbox_validation_job(
+                sandbox_session_id=sandbox_session_id,
+                validation_job_id=validation_job_id,
+                dispatched_at=self._now(),
+            )
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("sandbox validation lineage missing") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError("sandbox validation dispatch rejected") from error
+
+    def complete_sandbox_validation_job(
+        self,
+        auth: AdminAuth,
+        *,
+        sandbox_session_id: UUID,
+        validation_job_id: UUID,
+        payload: ValidationResultPayload,
+    ) -> SandboxSessionRecord:
+        """Authenticated Controller-only evidence commit, never target Agent."""
+        self._authenticate_admin(auth)
+        try:
+            return self._repository.complete_sandbox_validation_job(
+                sandbox_session_id=sandbox_session_id,
+                validation_job_id=validation_job_id,
+                payload=payload,
+                completed_at=self._now(),
+            )
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("sandbox validation execution missing") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError("sandbox evidence completion rejected") from error
+
+
+    def _build_authorized_validation_job(
         self,
         auth: AdminAuth,
         request: ValidationJobCreateRequest,
     ) -> ValidationJobRecord:
-        """Authorize one fixed 7.1.1 M5 experiment for one stored M6C report."""
-
+        """Derive a fixed validation authorization from Controller M3/M4 evidence."""
         self._authenticate_admin(auth)
         self._require_profile_target(
             target_id=request.target_id,
@@ -877,6 +921,15 @@ class ControllerService:
             raise ControllerConflictError(
                 "compatibility evidence does not authorize the requested validation"
             ) from error
+        return job
+
+    def create_validation_job(
+        self,
+        auth: AdminAuth,
+        request: ValidationJobCreateRequest,
+    ) -> ValidationJobRecord:
+        """Legacy Agent-owned M6D path; sandbox jobs use the atomic entry point."""
+        job = self._build_authorized_validation_job(auth, request)
         try:
             return self._repository.create_validation_job(job)
         except StorageNotFoundError as error:
@@ -887,6 +940,37 @@ class ControllerService:
             raise ControllerConflictError(
                 "validation job conflicts with Controller state"
             ) from error
+
+    def create_and_dispatch_sandbox_validation_job(
+        self,
+        auth: AdminAuth,
+        *,
+        sandbox_session_id: UUID,
+        request: ValidationJobCreateRequest,
+    ) -> tuple[ValidationJobRecord, SandboxSessionRecord]:
+        """Create and reserve an authorized job in one SQLite transaction.
+
+        Unlike the legacy Agent path, no unassigned job is published before
+        the sandbox binding is persisted. Agent polling therefore cannot race
+        with this operation, even when it runs on a separate process.
+        """
+        job = self._build_authorized_validation_job(auth, request)
+        try:
+            return self._repository.dispatch_sandbox_validation_job(
+                sandbox_session_id=sandbox_session_id,
+                validation_job_id=job.validation_job_id,
+                dispatched_at=self._now(),
+                pending_job=job,
+            )
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError(
+                "sandbox authorization lineage does not exist"
+            ) from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "atomic sandbox validation authorization was rejected"
+            ) from error
+
 
     def submit_validation_result(
         self,

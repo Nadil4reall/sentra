@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import struct
 from pathlib import Path
 from typing import Any
@@ -176,6 +177,32 @@ def test_valid_manifest_is_accepted_and_returned_unchanged() -> None:
     _assert_ack(stream, status="accepted")
 
 
+def test_receiver_diagnostics_identify_frame_and_ack_stages_without_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stream = ChunkedDuplex(encode_sandbox_context_frame(_manifest()))
+
+    result = receive_one_context(stream)
+
+    assert result.acknowledgement.status == "accepted"
+    messages = [record.getMessage() for record in caplog.records]
+    for stage in (
+        "header_wait",
+        "first_byte_received",
+        "header_complete",
+        "payload_read_start",
+        "payload_complete",
+        "context_decoded",
+        "ack_write_start",
+        "ack_write_complete",
+    ):
+        assert any(f"guest {stage}" in message for message in messages)
+    assert "0666" not in " ".join(messages)
+    assert "passwd_file_mode" not in " ".join(messages)
+    assert "source_state" not in " ".join(messages)
+    assert all(re.match(r"^\d{4}-\d\d-\d\dT.*Z guest ", message) for message in messages)
+
+
 def test_initial_empty_reads_before_first_header_byte_are_tolerated() -> None:
     stream = InitialEmptyReads(
         encode_sandbox_context_frame(_manifest()), initial_empty_reads=2
@@ -210,6 +237,7 @@ def test_initial_empty_reads_then_fragmented_header_and_payload_are_accepted() -
 
 def test_startup_timeout_fails_as_io_without_invalid_frame_ack(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     clock = FakeClock()
     monkeypatch.setattr(receiver_module, "_monotonic", clock.monotonic)
@@ -220,6 +248,14 @@ def test_startup_timeout_fails_as_io_without_invalid_frame_ack(
         receive_one_context(stream)
 
     assert stream.written == b""
+    assert any(
+        "guest first_byte_timeout" in record.getMessage()
+        for record in caplog.records
+    )
+    assert any(
+        "guest failure=SandboxReceiverIOError" in record.getMessage()
+        for record in caplog.records
+    )
     assert clock.now == receiver_module._FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
     assert len(stream.read_sizes) <= (
         receiver_module._FIRST_FRAME_STARTUP_TIMEOUT_SECONDS
@@ -283,7 +319,9 @@ def test_partial_acknowledgement_writes_are_completed() -> None:
     _assert_ack(stream, status="accepted")
 
 
-def test_eof_during_header_fails_closed_with_invalid_frame_ack() -> None:
+def test_eof_during_header_fails_closed_with_invalid_frame_ack(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     stream = ChunkedDuplex(b"\x00\x00", read_limit=1)
 
     result = receive_one_context(stream)
@@ -294,9 +332,15 @@ def test_eof_during_header_fails_closed_with_invalid_frame_ack() -> None:
         status="rejected",
         reason_code=SandboxContextRejectionCode.INVALID_FRAME,
     )
+    assert any(
+        "guest header_incomplete" in record.getMessage()
+        for record in caplog.records
+    )
 
 
-def test_eof_during_payload_fails_closed_with_invalid_frame_ack() -> None:
+def test_eof_during_payload_fails_closed_with_invalid_frame_ack(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     stream = ChunkedDuplex(struct.pack("!I", 8) + b"{}")
 
     result = receive_one_context(stream)
@@ -306,6 +350,10 @@ def test_eof_during_payload_fails_closed_with_invalid_frame_ack() -> None:
         stream,
         status="rejected",
         reason_code=SandboxContextRejectionCode.INVALID_FRAME,
+    )
+    assert any(
+        "guest payload_incomplete" in record.getMessage()
+        for record in caplog.records
     )
 
 

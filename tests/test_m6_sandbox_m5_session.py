@@ -16,7 +16,10 @@ import pytest
 from pydantic import ValidationError
 
 from src import sandbox_m5_validation
-from src.controller.models import JobStatus, ValidationJobRecord, ValidationResultPayload
+from src.controller.models import (
+    JobStatus, ValidationJobCreateRequest, ValidationJobRecord, ValidationResultPayload,
+)
+from src.controller.sandbox import _LibvirtValidationStream
 from src.controller.sandbox_m5 import (
     SandboxM5ControllerError,
     build_sandbox_m5_authorization,
@@ -61,6 +64,30 @@ from src.sandbox_validator.models import (
 )
 from src.sandbox_validator.validator import SandboxValidator as RealSandboxValidator
 from src.target_profiler.models import TargetInfo
+
+
+class _InMemoryLibvirtEvents:
+    VIR_STREAM_EVENT_READABLE = 1
+    VIR_STREAM_EVENT_WRITABLE = 2
+    VIR_STREAM_EVENT_ERROR = 4
+    VIR_STREAM_EVENT_HANGUP = 8
+
+    def virEventAddTimeout(self, _ms: int, _callback: object, _opaque: object) -> int:
+        return 1
+
+    def virEventRemoveTimeout(self, _timer: int) -> int:
+        return 0
+
+    def virEventRunDefaultImpl(self) -> int:
+        return 0
+
+
+class _InMemoryStreamEvents:
+    def eventAddCallback(self, _mask: int, _callback: object, _opaque: object) -> int:
+        return 0
+
+    def eventRemoveCallback(self) -> int:
+        return 0
 
 
 _NOW = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
@@ -818,6 +845,168 @@ def test_transport_reads_partial_frames_and_controller_lineage_is_strict(
     assert payload.validation_job_id == _JOB_ID
 
 
+
+def test_libvirt_stream_bridge_runs_existing_controller_m5_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    result, guest_stream, _observed, _files, _rep_fs = _run_guest(
+        monkeypatch,
+        tmp_path,
+        sandbox_operator_acknowledged=True,
+    )
+
+    class RawLibvirtStream(_InMemoryStreamEvents):
+        def __init__(self, incoming: bytes) -> None:
+            self.incoming = bytearray(incoming)
+            self.offset = 0
+            self.sent = bytearray()
+            self.recv_calls = 0
+            self.send_calls = 0
+            self.finish_count = 0
+            self.abort_count = 0
+
+        def recv(self, size: int):
+            self.recv_calls += 1
+
+            if self.recv_calls == 1:
+                return -2
+
+            if self.offset == len(self.incoming):
+                return b""
+
+            count = min(size, 1, len(self.incoming) - self.offset)
+            value = bytes(
+                self.incoming[self.offset : self.offset + count]
+            )
+            self.offset += count
+            return value
+
+        def send(self, data: bytes) -> int:
+            self.send_calls += 1
+
+            if self.send_calls == 1:
+                return -2
+
+            count = min(len(data), 2)
+            self.sent.extend(data[:count])
+            return count
+
+        def finish(self) -> None:
+            self.finish_count += 1
+
+        def abort(self) -> None:
+            self.abort_count += 1
+
+    class RawConnection:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    raw_stream = RawLibvirtStream(bytes(guest_stream.outgoing))
+    connection = RawConnection()
+
+    with _LibvirtValidationStream(
+        raw_stream,
+        connection,
+        _InMemoryLibvirtEvents(),
+        timeout_seconds=1.0,
+        retry_seconds=0.0,
+    ) as stream:
+        payload = run_sandbox_m5_controller_transaction(
+            stream,
+            manifest=_manifest(),
+            job=_job(),
+        )
+
+    assert type(payload) is ValidationResultPayload
+    assert payload.validation_job_id == _JOB_ID
+    assert payload.profile_id == _PROFILE_ID
+    assert payload.compatibility_report_id == _REPORT_ID
+    assert payload.report == result.report
+
+    context_frame, remainder = _split_frame(bytes(raw_stream.sent))
+    assert context_frame == encode_sandbox_context_frame(_manifest())
+
+    authorization = decode_sandbox_m5_authorization_frame(remainder)
+    assert authorization.validation_job_id == _JOB_ID
+    assert authorization.profile_id == _PROFILE_ID
+    assert authorization.compatibility_report_id == _REPORT_ID
+
+    assert raw_stream.recv_calls > 1
+    assert raw_stream.send_calls > 1
+    assert raw_stream.finish_count == 1
+    controller_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.controller.sandbox_m5"
+    ]
+    for stage in (
+        "context_write_started",
+        "context_write_complete",
+        "ack_header_read_started",
+        "ack_header_complete",
+        "ack_payload_complete",
+        "ack_accepted",
+    ):
+        assert any(f"stage={stage}" in message for message in controller_messages)
+    assert "source_state" not in " ".join(controller_messages)
+    assert raw_stream.abort_count == 0
+    assert connection.close_count == 1
+
+
+def test_context_send_without_guest_ack_stops_before_authorization(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class NoAckStream:
+        def __init__(self) -> None:
+            self.sent = bytearray()
+            self.recv_calls = 0
+            self.aborted = False
+
+        def send(self, data: bytes) -> int:
+            self.sent.extend(data)
+            return len(data)
+
+        def recv(self, _size: int) -> int:
+            self.recv_calls += 1
+            return -2
+
+        def abort(self) -> None:
+            self.aborted = True
+
+    class Connection:
+        def close(self) -> None:
+            pass
+
+    raw_stream = NoAckStream()
+    with pytest.raises(SandboxM5ControllerError, match="stream read failed"):
+        with _LibvirtValidationStream(
+            raw_stream,
+            Connection(),
+            _InMemoryLibvirtEvents(),
+            timeout_seconds=0.0,
+            retry_seconds=0.0,
+        ) as stream:
+            run_sandbox_m5_controller_transaction(
+                stream,
+                manifest=_manifest(),
+                job=_job(),
+            )
+
+    assert bytes(raw_stream.sent) == encode_sandbox_context_frame(_manifest())
+    assert raw_stream.recv_calls == 1
+    assert raw_stream.aborted
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("stage=context_write_complete" in message for message in messages)
+    assert any("stage=ack_header_read_started" in message for message in messages)
+    assert any("stage=stream_read_timeout" in message for message in messages)
+    assert not any("stage=ack_header_complete" in message for message in messages)
+
+
 def test_session_uses_one_context_and_no_agent_or_generic_execution_surface() -> None:
     source_paths = (
         Path("src/sandbox_m5_session.py"),
@@ -851,3 +1040,316 @@ def test_session_uses_one_context_and_no_agent_or_generic_execution_surface() ->
 def test_m5_wire_size_is_independent_of_context_frame_limit() -> None:
     assert MAX_SANDBOX_M5_PAYLOAD_BYTES == 65536
     assert MAX_SANDBOX_M5_PAYLOAD_BYTES > MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES
+
+
+def _atomic_sandbox_request(job: ValidationJobRecord) -> ValidationJobCreateRequest:
+    return ValidationJobCreateRequest(
+        request_id=job.request_id,
+        target_id=job.target_id,
+        profile_id=job.profile_id,
+        compatibility_report_id=job.compatibility_report_id,
+        control_id=job.control_id,
+        administrator_approval_acknowledged=True,
+        compatibility_risk_acknowledged=job.compatibility_risk_acknowledged,
+        compatibility_override_reason=job.compatibility_override_reason,
+    )
+
+
+def test_controller_owned_sandbox_validation_uses_sandbox_not_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.controller.sandbox_m5 as controller_sandbox_m5
+    from src.controller.models import SandboxSessionRecord, SandboxSessionStatus
+
+    pending_values = _job().model_dump(mode="python")
+    pending_values["status"] = JobStatus.PENDING
+    pending_values["dispatched_at"] = None
+    pending_values["completed_at"] = None
+    pending_job = ValidationJobRecord.model_validate(
+        pending_values,
+        strict=True,
+    )
+
+    session_id = uuid4()
+    session = SandboxSessionRecord(
+        sandbox_session_id=session_id,
+        request_id=uuid4(),
+        source_target_id=pending_job.target_id,
+        source_profile_id=pending_job.profile_id,
+        source_compatibility_report_id=pending_job.compatibility_report_id,
+        control_id="7.1.1",
+        status=SandboxSessionStatus.READY,
+        sandbox_instance_id=f"sentra-sbx-{session_id}",
+        administrator_sandbox_authorization_acknowledged=True,
+        compatibility_reference=pending_job.compatibility_reference,
+        compatibility_reference_sha256="0" * 64,
+        created_at=_NOW - timedelta(seconds=3),
+        provisioning_started_at=_NOW - timedelta(seconds=2),
+        ready_at=_NOW - timedelta(seconds=1),
+    )
+
+    calls: list[str] = []
+
+    class FakeService:
+        def create_and_dispatch_sandbox_validation_job(
+            self, auth: Any, *, sandbox_session_id: UUID,
+            request: ValidationJobCreateRequest,
+        ) -> tuple[ValidationJobRecord, Any]:
+            assert request.request_id == pending_job.request_id
+            validating = self.mark_validating(sandbox_session_id)
+            values = pending_job.model_dump(mode="python")
+            values["status"] = JobStatus.DISPATCHED
+            values["dispatched_at"] = _NOW
+            return ValidationJobRecord.model_validate(values, strict=True), validating
+
+        def complete_sandbox_validation_job(
+            self, auth: Any, *, sandbox_session_id: UUID,
+            validation_job_id: UUID, payload: Any,
+        ) -> Any:
+            return self.mark_completed(sandbox_session_id)
+
+        def get_sandbox_session(self, *args: Any, **kwargs: Any) -> SandboxSessionRecord:
+            calls.append("get")
+            return session
+
+        def mark_validating(self, sandbox_session_id: UUID) -> SandboxSessionRecord:
+            assert sandbox_session_id == session_id
+            calls.append("validating")
+            values = session.model_dump(mode="python")
+            values["status"] = SandboxSessionStatus.VALIDATING
+            values["validation_started_at"] = _NOW
+            return SandboxSessionRecord.model_validate(values, strict=True)
+
+        def mark_completed(self, sandbox_session_id: UUID) -> SandboxSessionRecord:
+            assert sandbox_session_id == session_id
+            calls.append("completed")
+            values = session.model_dump(mode="python")
+            values["status"] = SandboxSessionStatus.COMPLETED
+            values["validation_started_at"] = _NOW
+            values["completed_at"] = _NOW + timedelta(seconds=1)
+            return SandboxSessionRecord.model_validate(values, strict=True)
+
+        def mark_failed(
+            self,
+            sandbox_session_id: UUID,
+            *,
+            failure_reason: str,
+        ) -> SandboxSessionRecord:
+            raise AssertionError(
+                f"unexpected failure transition: {sandbox_session_id} {failure_reason}"
+            )
+
+    class FakeChannel:
+        def __enter__(self) -> "FakeChannel":
+            calls.append("channel-enter")
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            calls.append("channel-exit")
+            return False
+
+    class FakeProvider:
+        def open_validation_channel(self, sandbox_session_id: UUID) -> FakeChannel:
+            assert sandbox_session_id == session_id
+            calls.append("open-channel")
+            return FakeChannel()
+
+    expected_payload = object()
+
+    def fake_transaction(
+        stream: Any,
+        *,
+        manifest: SandboxContextManifest,
+        job: ValidationJobRecord,
+    ) -> object:
+        calls.append("transaction")
+        assert job.status is JobStatus.DISPATCHED
+        assert job.dispatched_at == _NOW
+        assert job.completed_at is None
+        assert job.validation_job_id == pending_job.validation_job_id
+        assert manifest == _manifest()
+        return expected_payload
+
+    monkeypatch.setattr(
+        controller_sandbox_m5,
+        "run_sandbox_m5_controller_transaction",
+        fake_transaction,
+    )
+
+    payload, completed = (
+        controller_sandbox_m5.run_controller_owned_sandbox_validation(
+            FakeService(),  # type: ignore[arg-type]
+            FakeProvider(),
+            object(),  # type: ignore[arg-type]
+            session=session,
+            request=_atomic_sandbox_request(pending_job),
+            manifest=_manifest(),
+        )
+    )
+
+    assert payload is expected_payload
+    assert completed.status is SandboxSessionStatus.COMPLETED
+    assert pending_job.status is JobStatus.PENDING
+    assert calls == [
+        "get",
+        "validating",
+        "open-channel",
+        "channel-enter",
+        "transaction",
+        "channel-exit",
+        "completed",
+    ]
+
+
+def test_controller_owned_sandbox_validation_rejects_non_ready_session() -> None:
+    import src.controller.sandbox_m5 as controller_sandbox_m5
+    from src.controller.models import SandboxSessionRecord, SandboxSessionStatus
+
+    pending_values = _job().model_dump(mode="python")
+    pending_values["status"] = JobStatus.PENDING
+    pending_values["dispatched_at"] = None
+    pending_values["completed_at"] = None
+    pending_job = ValidationJobRecord.model_validate(
+        pending_values,
+        strict=True,
+    )
+
+    session_id = uuid4()
+    session = SandboxSessionRecord(
+        sandbox_session_id=session_id,
+        request_id=uuid4(),
+        source_target_id=pending_job.target_id,
+        source_profile_id=pending_job.profile_id,
+        source_compatibility_report_id=pending_job.compatibility_report_id,
+        control_id="7.1.1",
+        status=SandboxSessionStatus.REQUESTED,
+        administrator_sandbox_authorization_acknowledged=True,
+        compatibility_reference=pending_job.compatibility_reference,
+        compatibility_reference_sha256="0" * 64,
+        created_at=_NOW,
+    )
+
+    class FakeService:
+        def get_sandbox_session(self, *args: Any, **kwargs: Any) -> SandboxSessionRecord:
+            return session
+
+    with pytest.raises(
+        controller_sandbox_m5.SandboxM5ControllerError,
+        match="sandbox is not ready",
+    ):
+        controller_sandbox_m5.run_controller_owned_sandbox_validation(
+            FakeService(),  # type: ignore[arg-type]
+            object(),
+            object(),  # type: ignore[arg-type]
+            session=session,
+            request=_atomic_sandbox_request(pending_job),
+            manifest=_manifest(),
+        )
+
+
+def test_controller_owned_sandbox_validation_failure_marks_session_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.controller.sandbox_m5 as controller_sandbox_m5
+    from src.controller.models import SandboxSessionRecord, SandboxSessionStatus
+
+    pending_values = _job().model_dump(mode="python")
+    pending_values["status"] = JobStatus.PENDING
+    pending_values["dispatched_at"] = None
+    pending_values["completed_at"] = None
+    pending_job = ValidationJobRecord.model_validate(
+        pending_values,
+        strict=True,
+    )
+
+    session_id = uuid4()
+    session = SandboxSessionRecord(
+        sandbox_session_id=session_id,
+        request_id=uuid4(),
+        source_target_id=pending_job.target_id,
+        source_profile_id=pending_job.profile_id,
+        source_compatibility_report_id=pending_job.compatibility_report_id,
+        control_id="7.1.1",
+        status=SandboxSessionStatus.READY,
+        sandbox_instance_id=f"sentra-sbx-{session_id}",
+        administrator_sandbox_authorization_acknowledged=True,
+        compatibility_reference=pending_job.compatibility_reference,
+        compatibility_reference_sha256="0" * 64,
+        created_at=_NOW - timedelta(seconds=3),
+        provisioning_started_at=_NOW - timedelta(seconds=2),
+        ready_at=_NOW - timedelta(seconds=1),
+    )
+
+    failed: list[str] = []
+
+    class FakeService:
+        def create_and_dispatch_sandbox_validation_job(
+            self, auth: Any, *, sandbox_session_id: UUID,
+            request: ValidationJobCreateRequest,
+        ) -> tuple[ValidationJobRecord, Any]:
+            assert request.request_id == pending_job.request_id
+            validating = self.mark_validating(sandbox_session_id)
+            values = pending_job.model_dump(mode="python")
+            values["status"] = JobStatus.DISPATCHED
+            values["dispatched_at"] = _NOW
+            return ValidationJobRecord.model_validate(values, strict=True), validating
+
+        def get_sandbox_session(self, *args: Any, **kwargs: Any) -> SandboxSessionRecord:
+            return session
+
+        def mark_validating(self, sandbox_session_id: UUID) -> SandboxSessionRecord:
+            values = session.model_dump(mode="python")
+            values["status"] = SandboxSessionStatus.VALIDATING
+            values["validation_started_at"] = _NOW
+            return SandboxSessionRecord.model_validate(values, strict=True)
+
+        def mark_failed(
+            self,
+            sandbox_session_id: UUID,
+            *,
+            failure_reason: str,
+        ) -> SandboxSessionRecord:
+            failed.append(failure_reason)
+            values = session.model_dump(mode="python")
+            values["status"] = SandboxSessionStatus.FAILED
+            values["validation_started_at"] = _NOW
+            values["completed_at"] = _NOW + timedelta(seconds=1)
+            values["failure_reason"] = failure_reason
+            return SandboxSessionRecord.model_validate(values, strict=True)
+
+    class FakeChannel:
+        def __enter__(self) -> "FakeChannel":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+    class FakeProvider:
+        def open_validation_channel(self, sandbox_session_id: UUID) -> FakeChannel:
+            return FakeChannel()
+
+    def fail_transaction(*args: Any, **kwargs: Any) -> object:
+        raise controller_sandbox_m5.SandboxM5ControllerError(
+            "test transaction failure"
+        )
+
+    monkeypatch.setattr(
+        controller_sandbox_m5,
+        "run_sandbox_m5_controller_transaction",
+        fail_transaction,
+    )
+
+    with pytest.raises(
+        controller_sandbox_m5.SandboxM5ControllerError,
+        match="test transaction failure",
+    ):
+        controller_sandbox_m5.run_controller_owned_sandbox_validation(
+            FakeService(),  # type: ignore[arg-type]
+            FakeProvider(),
+            object(),  # type: ignore[arg-type]
+            session=session,
+            request=_atomic_sandbox_request(pending_job),
+            manifest=_manifest(),
+        )
+
+    assert failed == ["sandbox validation failed"]

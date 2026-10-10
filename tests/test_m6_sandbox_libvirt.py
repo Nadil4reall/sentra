@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from src.controller import sandbox as sandbox_module
 from src.controller.sandbox import (
     BackendObservation,
     LibvirtBackend,
@@ -24,6 +25,7 @@ from src.controller.sandbox import (
     LocalNestedVmPlan,
     SandboxProviderError,
     SandboxProviderSecurityError,
+    SandboxProviderUnavailableError,
     SandboxRuntimeState,
     SandboxStorageMode,
     plan_sha256,
@@ -145,6 +147,77 @@ class FakePool:
         self.connection.pools.pop(self._name, None)
 
 
+class FakeStream:
+    def __init__(self, flags: int) -> None:
+        self.flags = flags
+        self.recv_results: list[bytes | int] = []
+        self.send_results: list[int] = []
+        self.recv_calls: list[int] = []
+        self.send_calls: list[bytes] = []
+        self.sent = bytearray()
+        self.finish_count = 0
+        self.abort_count = 0
+        self.finish_error: Exception | None = None
+        self.event_callback = None
+        self.event_mask: int | None = None
+        self.event_masks: list[int] = []
+        self.event_add_count = 0
+        self.event_remove_count = 0
+
+    def eventAddCallback(self, events: int, callback: object, _opaque: object) -> int:
+        assert self.event_callback is None
+        self.event_callback = callback
+        self.event_mask = events
+        self.event_masks.append(events)
+        self.event_add_count += 1
+        return 0
+
+    def eventRemoveCallback(self) -> int:
+        self.event_callback = None
+        self.event_mask = None
+        self.event_remove_count += 1
+        return 0
+
+    def recv(self, nbytes: int):
+        self.recv_calls.append(nbytes)
+
+        if self.recv_results:
+            result = self.recv_results.pop(0)
+            if result == -2:
+                return -2
+
+            assert isinstance(result, bytes)
+            assert len(result) <= nbytes
+            return result
+
+        return b""
+
+    def send(self, data: bytes) -> int:
+        payload = bytes(data)
+        self.send_calls.append(payload)
+
+        if self.send_results:
+            result = self.send_results.pop(0)
+            if result == -2:
+                return -2
+            count = result
+        else:
+            count = len(payload)
+
+        if 0 <= count <= len(payload):
+            self.sent.extend(payload[:count])
+
+        return count
+
+    def finish(self) -> None:
+        self.finish_count += 1
+        if self.finish_error is not None:
+            raise self.finish_error
+
+    def abort(self) -> None:
+        self.abort_count += 1
+
+
 class FakeDomain:
     def __init__(self, connection: "FakeConnection", xml: str) -> None:
         self.connection = connection
@@ -152,11 +225,24 @@ class FakeDomain:
         self._name = ET.fromstring(xml).findtext("name") or ""
         self._state = 5
         self.active = False
+        self.channel_opens: list[tuple[str, FakeStream, int]] = []
+        self.channel_states_after_open: list[str | None] = ["connected"]
+        self.channel_opened = False
+        self.channel_state: str | None = None
 
     def name(self) -> str:
         return self._name
 
     def XMLDesc(self, _flags: int) -> str:
+        if self.channel_opened:
+            if self.channel_states_after_open:
+                self.channel_state = self.channel_states_after_open.pop(0)
+            if self.channel_state is not None:
+                root = ET.fromstring(self._xml)
+                target = root.find("devices/channel/target")
+                assert target is not None
+                target.set("state", self.channel_state)
+                return ET.tostring(root, encoding="unicode")
         return self._xml
 
     def isActive(self) -> int:
@@ -177,6 +263,15 @@ class FakeDomain:
         self.active = False
         self._state = 5
 
+    def openChannel(
+        self,
+        name: str,
+        stream: FakeStream,
+        flags: int = 0,
+    ) -> None:
+        self.channel_opens.append((name, stream, flags))
+        self.channel_opened = True
+
     def undefine(self) -> None:
         self.connection.domains.pop(self._name, None)
 
@@ -194,6 +289,8 @@ class FakeConnection:
         self.fail_before_domain_define = False
         self.fail_after_domain_start = False
         self.closed = 0
+        self.streams: list[FakeStream] = []
+        self.new_stream_flags: list[int] = []
 
     def storagePoolLookupByName(self, name: str) -> FakePool:
         if name not in self.pools:
@@ -222,11 +319,22 @@ class FakeConnection:
         self.domain_define_count += 1
         return domain
 
+    def newStream(self, flags: int = 0) -> FakeStream:
+        self.new_stream_flags.append(flags)
+        stream = FakeStream(flags)
+        self.streams.append(stream)
+        return stream
+
     def close(self) -> None:
         self.closed += 1
 
 
 class FakeLibvirtModule:
+    VIR_STREAM_NONBLOCK = 1
+    VIR_STREAM_EVENT_READABLE = 1
+    VIR_STREAM_EVENT_WRITABLE = 2
+    VIR_STREAM_EVENT_ERROR = 4
+    VIR_STREAM_EVENT_HANGUP = 8
     VIR_ERR_NO_DOMAIN = 42
     VIR_ERR_NO_STORAGE_POOL = 49
     VIR_ERR_NO_STORAGE_VOL = 50
@@ -243,6 +351,36 @@ class FakeLibvirtModule:
         self.connections: list[FakeConnection] = []
         self.uris: list[str] = []
         self.system_connection = FakeConnection("qemu:///system")
+        self.event_registration_count = 0
+        self.event_run_count = 0
+        self.event_error: Exception | None = None
+        self.event_hook = None
+        self.event_timers: dict[int, object] = {}
+        self.next_timer_id = 1
+
+    def virEventRegisterDefaultImpl(self) -> int:
+        self.event_registration_count += 1
+        return 0
+
+    def virEventAddTimeout(self, _milliseconds: int, callback: object, _opaque: object) -> int:
+        timer_id = self.next_timer_id
+        self.next_timer_id += 1
+        self.event_timers[timer_id] = callback
+        return timer_id
+
+    def virEventRemoveTimeout(self, timer_id: int) -> int:
+        self.event_timers.pop(timer_id)
+        return 0
+
+    def virEventRunDefaultImpl(self) -> int:
+        self.event_run_count += 1
+        if self.event_error is not None:
+            raise self.event_error
+        if self.event_hook is not None:
+            self.event_hook()
+        for timer_id, callback in tuple(self.event_timers.items()):
+            callback(timer_id, None)
+        return 0
 
     def open(self, uri: str) -> FakeConnection:
         self.uris.append(uri)
@@ -1338,3 +1476,345 @@ LocalNestedVmBackendMethods = {
         "destroy",
     )
 }
+
+
+
+def test_validation_channel_uses_fixed_nonblocking_libvirt_stream(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+
+    instance = provider.provision(session_id)
+    assert instance.runtime_state is SandboxRuntimeState.RUNNING
+
+    connection = module.system_connection
+    channel = provider.open_validation_channel(session_id)
+
+    assert connection.new_stream_flags == [module.VIR_STREAM_NONBLOCK]
+    assert len(connection.streams) == 1
+
+    domain = connection.domains[sandbox_resource_name(session_id)]
+    assert len(domain.channel_opens) == 1
+
+    channel_name, raw_stream, flags = domain.channel_opens[0]
+
+    assert channel_name == "org.sentra.validation.0"
+    assert raw_stream is connection.streams[0]
+    assert flags == 0
+
+    closed_before_abort = connection.closed
+    channel.abort()
+
+    assert raw_stream.abort_count == 1
+    assert raw_stream.finish_count == 0
+    assert connection.closed == closed_before_abort + 1
+
+
+def test_validation_channel_waits_for_guest_process_to_connect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClock:
+        now = 0.0
+        sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    clock = FakeClock()
+    monkeypatch.setattr(sandbox_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(sandbox_module.time, "sleep", clock.sleep)
+
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+
+    domain = module.system_connection.domains[sandbox_resource_name(session_id)]
+    domain.channel_states_after_open = ["disconnected", "connected"]
+
+    channel = provider.open_validation_channel(session_id)
+
+    assert clock.sleeps == [sandbox_module._LIBVIRT_CHANNEL_READY_POLL_INTERVAL_SECONDS]
+    assert domain.channel_state == "connected"
+    assert domain.channel_states_after_open == []
+    raw_stream = module.system_connection.streams[-1]
+    assert bytes(raw_stream.sent) == b""
+    channel.abort()
+
+
+def test_validation_channel_times_out_closed_when_guest_never_connects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClock:
+        now = 0.0
+        sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    clock = FakeClock()
+    monkeypatch.setattr(sandbox_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(sandbox_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(
+        sandbox_module,
+        "_LIBVIRT_CHANNEL_READY_TIMEOUT_SECONDS",
+        0.1,
+    )
+    monkeypatch.setattr(
+        sandbox_module,
+        "_LIBVIRT_CHANNEL_READY_POLL_INTERVAL_SECONDS",
+        0.05,
+    )
+
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+
+    domain = module.system_connection.domains[sandbox_resource_name(session_id)]
+    domain.channel_states_after_open = ["disconnected"]
+
+    with pytest.raises(
+        SandboxProviderUnavailableError,
+        match="guest SENTRA validation channel did not become ready",
+    ):
+        provider.open_validation_channel(session_id)
+
+    raw_stream = module.system_connection.streams[-1]
+    assert raw_stream.sent == bytearray()
+    assert raw_stream.abort_count == 1
+    assert module.system_connection.closed >= 1
+    assert clock.sleeps == [0.05, 0.05]
+
+
+def test_validation_stream_retries_would_block_and_preserves_partial_io(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+
+    raw_stream = module.system_connection.streams[-1]
+
+    raw_stream.recv_results.extend(
+        [
+            -2,
+            b"abc",
+        ]
+    )
+
+    assert channel.read(8) == b"abc"
+    assert raw_stream.recv_calls == [8, 8]
+    assert module.event_registration_count == 1
+    assert module.event_run_count == 1
+    assert raw_stream.event_add_count == raw_stream.event_remove_count == 1
+    assert raw_stream.event_masks[0] & module.VIR_STREAM_EVENT_READABLE
+    assert not raw_stream.event_masks[0] & module.VIR_STREAM_EVENT_WRITABLE
+
+    raw_stream.send_results.extend(
+        [
+            -2,
+            2,
+        ]
+    )
+
+    assert channel.write(b"abcdef") == 2
+    assert raw_stream.send_calls == [
+        b"abcdef",
+        b"abcdef",
+    ]
+    assert bytes(raw_stream.sent) == b"ab"
+    assert module.event_run_count == 2
+    assert raw_stream.event_add_count == raw_stream.event_remove_count == 2
+    assert raw_stream.event_masks[1] & module.VIR_STREAM_EVENT_WRITABLE
+
+    channel.abort()
+
+
+def test_validation_stream_readiness_dispatch_makes_ack_data_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+    raw_stream = module.system_connection.streams[-1]
+
+    def recv_after_dispatch(_size: int) -> bytes | int:
+        return -2 if module.event_run_count == 0 else b"ACK"
+
+    monkeypatch.setattr(raw_stream, "recv", recv_after_dispatch)
+    assert channel.read(3) == b"ACK"
+    assert module.event_run_count == 1
+    channel.abort()
+
+
+def test_validation_stream_preserves_fragmented_ack_reads(tmp_path: Path) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+    raw_stream = module.system_connection.streams[-1]
+    raw_stream.recv_results.extend([-2, b"\x00", b"\x00\x00", b"\x02", b"{", b"}"])
+
+    def read_exact(size: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < size:
+            chunks.extend(channel.read(size - len(chunks)))
+        return bytes(chunks)
+
+    assert read_exact(4) == b"\x00\x00\x00\x02"
+    assert read_exact(2) == b"{}"
+    assert module.event_run_count == 1
+    channel.abort()
+
+
+def test_validation_stream_event_failure_aborts_and_closes(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+    raw_stream = module.system_connection.streams[-1]
+    raw_stream.recv_results.append(-2)
+    module.event_error = RuntimeError("fake event dispatch failure")
+    closed_before = module.system_connection.closed
+
+    with pytest.raises(RuntimeError, match="fake event dispatch failure"):
+        channel.read(4)
+
+    assert raw_stream.event_add_count == raw_stream.event_remove_count == 1
+    assert module.event_timers == {}
+    assert raw_stream.abort_count == 1
+    assert module.system_connection.closed == closed_before + 1
+
+
+def test_validation_stream_read_failure_aborts_and_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+    raw_stream = module.system_connection.streams[-1]
+    closed_before = module.system_connection.closed
+
+    def fail_read(_size: int) -> bytes:
+        raise OSError("fake read failure")
+
+    monkeypatch.setattr(raw_stream, "recv", fail_read)
+    with pytest.raises(OSError, match="fake read failure"):
+        channel.read(4)
+
+    assert raw_stream.abort_count == 1
+    assert module.system_connection.closed == closed_before + 1
+
+
+def test_validation_stream_timeout_logs_only_stage_and_exception_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+    raw_stream = module.system_connection.streams[-1]
+    monkeypatch.setattr(raw_stream, "recv", lambda _size: -2)
+    clock = FakeClock()
+    monkeypatch.setattr(sandbox_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(sandbox_module.time, "sleep", clock.sleep)
+    module.event_hook = lambda: clock.sleep(0.05)
+
+    with pytest.raises(TimeoutError, match="read timed out"):
+        channel.read(4)
+
+    assert clock.now == pytest.approx(30.0)
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("stage=stream_read_timeout" in message for message in messages) == 1
+    assert all("payload" not in message for message in messages)
+    assert raw_stream.abort_count == 1
+    assert raw_stream.event_add_count == raw_stream.event_remove_count
+
+
+def test_validation_stream_finishes_and_closes_connection(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+
+    connection = module.system_connection
+    raw_stream = connection.streams[-1]
+    closed_before_finish = connection.closed
+
+    channel.finish()
+
+    assert raw_stream.finish_count == 1
+    assert raw_stream.abort_count == 0
+    assert connection.closed == closed_before_finish + 1
+
+
+def test_validation_stream_aborts_if_finish_fails(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+
+    provider.provision(session_id)
+    channel = provider.open_validation_channel(session_id)
+
+    connection = module.system_connection
+    raw_stream = connection.streams[-1]
+    raw_stream.finish_error = RuntimeError("simulated finish failure")
+    closed_before_finish = connection.closed
+
+    with pytest.raises(RuntimeError, match="simulated finish failure"):
+        channel.finish()
+
+    assert raw_stream.finish_count == 1
+    assert raw_stream.abort_count == 1
+    assert connection.closed == closed_before_finish + 1
+
+
+def test_validation_channel_fails_closed_without_nonblocking_capability(
+    tmp_path: Path,
+) -> None:
+    provider, _backend, module, _root = _provider_and_backend(tmp_path)
+    session_id = uuid4()
+
+    provider.provision(session_id)
+    module.VIR_STREAM_NONBLOCK = None
+
+    with pytest.raises(
+        SandboxProviderUnavailableError,
+        match="non-blocking stream capability",
+    ):
+        provider.open_validation_channel(session_id)
+
+    assert module.system_connection.streams == []

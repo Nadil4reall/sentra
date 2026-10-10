@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from typing import BinaryIO
 
 from pydantic import ValidationError
 
 from src.controller.models import (
+    AdminAuth,
     JobStatus,
+    SandboxSessionRecord,
+    SandboxSessionStatus,
+    ValidationJobCreateRequest,
     ValidationJobRecord,
     ValidationResultPayload,
 )
+from src.controller.service import ControllerService
 from src.controller.validation import require_payload_matches_job
 from src.sandbox_protocol import (
     MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES,
@@ -35,6 +41,9 @@ from src.sandbox_m5_protocol.transport import (
 
 class SandboxM5ControllerError(RuntimeError):
     """Fixed, non-sensitive error for a failed Controller-side transaction."""
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def build_sandbox_m5_authorization(
@@ -151,7 +160,11 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
         remaining = size - len(result)
         try:
             chunk = stream.read(remaining)
-        except Exception:
+        except Exception as error:
+            _LOG.warning(
+                "sandbox controller stage=ack_read_failed exception_type=%s",
+                type(error).__name__,
+            )
             raise SandboxM5ControllerError("Controller stream read failed") from None
         if type(chunk) is not bytes or not chunk or len(chunk) > remaining:
             raise SandboxM5ControllerError("Controller stream frame was truncated")
@@ -160,14 +173,16 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
 
 
 def _read_acknowledgement(stream: BinaryIO) -> SandboxContextAcknowledgement:
+    _LOG.warning("sandbox controller stage=ack_header_read_started")
     header = _read_exact(stream, 4)
+    _LOG.warning("sandbox controller stage=ack_header_complete")
     payload_size = int.from_bytes(header, byteorder="big", signed=False)
     if payload_size == 0 or payload_size > MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES:
         raise SandboxM5ControllerError("context acknowledgement length was rejected")
     try:
-        return decode_sandbox_acknowledgement_frame(
-            header + _read_exact(stream, payload_size)
-        )
+        payload = _read_exact(stream, payload_size)
+        _LOG.warning("sandbox controller stage=ack_payload_complete")
+        return decode_sandbox_acknowledgement_frame(header + payload)
     except SandboxTransportError:
         raise SandboxM5ControllerError("context acknowledgement was rejected") from None
 
@@ -198,13 +213,145 @@ def run_sandbox_m5_controller_transaction(
         context_frame = encode_sandbox_context_frame(manifest)
     except (SandboxTransportError, TypeError, ValueError):
         raise SandboxM5ControllerError("sandbox context was rejected") from None
+    _LOG.warning("sandbox controller stage=context_write_started")
     _write_all(stream, context_frame)
+    _LOG.warning("sandbox controller stage=context_write_complete")
     acknowledgement = _read_acknowledgement(stream)
     if acknowledgement.status != "accepted":
         raise SandboxM5ControllerError("sandbox context was rejected by guest")
+    _LOG.warning("sandbox controller stage=ack_accepted")
     try:
         write_sandbox_m5_authorization(stream, authorization)
         result = read_sandbox_m5_result(stream)
     except SandboxM5TransportError:
         raise SandboxM5ControllerError("M5 session transport was rejected") from None
     return sandbox_m5_result_to_validation_payload(job, result, manifest)
+
+def run_controller_owned_sandbox_validation(
+    service: ControllerService,
+    provider: object,
+    auth: AdminAuth,
+    *,
+    session: SandboxSessionRecord,
+    request: ValidationJobCreateRequest,
+    manifest: SandboxContextManifest,
+) -> tuple[ValidationResultPayload, SandboxSessionRecord]:
+    """Run one fixed M5 job through the Controller-owned disposable sandbox."""
+
+    if (
+        type(session) is not SandboxSessionRecord
+        or type(request) is not ValidationJobCreateRequest
+        or type(manifest) is not SandboxContextManifest
+    ):
+        raise SandboxM5ControllerError(
+            "sandbox validation execution input was rejected"
+        )
+
+    current = service.get_sandbox_session(
+        auth,
+        target_id=session.source_target_id,
+        profile_id=session.source_profile_id,
+        compatibility_report_id=session.source_compatibility_report_id,
+        sandbox_session_id=session.sandbox_session_id,
+    )
+
+    if current.status is not SandboxSessionStatus.READY:
+        raise SandboxM5ControllerError(
+            "sandbox is not ready for validation"
+        )
+
+    if (
+        request.target_id != current.source_target_id
+        or request.profile_id != current.source_profile_id
+        or request.compatibility_report_id
+        != current.source_compatibility_report_id
+        or request.control_id != current.control_id
+        or manifest.control_id != current.control_id
+    ):
+        raise SandboxM5ControllerError(
+            "sandbox validation lineage was rejected"
+        )
+
+    opener = getattr(provider, "open_validation_channel", None)
+    if not callable(opener):
+        raise SandboxM5ControllerError(
+            "sandbox validation channel is unavailable"
+        )
+
+    # The authoritative DISPATCHED job is persisted and bound to this VM,
+    # in the same transaction as the READY -> VALIDATING transition.
+    try:
+        dispatched_job, validating = service.create_and_dispatch_sandbox_validation_job(
+            auth,
+            sandbox_session_id=current.sandbox_session_id,
+            request=request,
+        )
+    except Exception:
+        raise SandboxM5ControllerError(
+            "sandbox validation dispatch was rejected"
+        ) from None
+    if (
+        validating.status is not SandboxSessionStatus.VALIDATING
+        or dispatched_job.status is not JobStatus.DISPATCHED
+        or dispatched_job.request_id != request.request_id
+        or dispatched_job.target_id != current.source_target_id
+        or dispatched_job.profile_id != current.source_profile_id
+        or dispatched_job.compatibility_report_id
+        != current.source_compatibility_report_id
+        or dispatched_job.compatibility_reference
+        != current.compatibility_reference
+        or dispatched_job.dispatched_at != validating.validation_started_at
+    ):
+        raise SandboxM5ControllerError(
+            "sandbox validation dispatch was not confirmed"
+        )
+
+    try:
+        channel = opener(current.sandbox_session_id)
+        if channel is None:
+            raise SandboxM5ControllerError(
+                "sandbox validation channel is unavailable"
+            )
+
+        with channel as stream:
+            payload = run_sandbox_m5_controller_transaction(
+                stream,
+                manifest=manifest,
+                job=dispatched_job,
+            )
+    except Exception as error:
+        try:
+            service.mark_failed(
+                current.sandbox_session_id,
+                failure_reason="sandbox validation failed",
+            )
+        except Exception:
+            pass
+
+        if isinstance(error, SandboxM5ControllerError):
+            raise
+
+        raise SandboxM5ControllerError(
+            "sandbox validation execution failed"
+        ) from None
+
+    try:
+        completed = service.complete_sandbox_validation_job(
+            auth,
+            sandbox_session_id=current.sandbox_session_id,
+            validation_job_id=dispatched_job.validation_job_id,
+            payload=payload,
+        )
+    except Exception:
+        try:
+            service.mark_failed(
+                current.sandbox_session_id,
+                failure_reason="sandbox validation completion failed",
+            )
+        except Exception:
+            pass
+        raise SandboxM5ControllerError(
+            "sandbox validation completion failed"
+        ) from None
+
+    return payload, completed

@@ -189,6 +189,20 @@ class ControllerRepository(Protocol):
         self, job: ValidationJobRecord
     ) -> ValidationJobRecord: ...
 
+    def dispatch_sandbox_validation_job(
+        self, *, sandbox_session_id: UUID, validation_job_id: UUID,
+        dispatched_at: datetime, pending_job: ValidationJobRecord | None = None,
+    ) -> tuple[ValidationJobRecord, SandboxSessionRecord]: ...
+
+    def complete_sandbox_validation_job(
+        self, *, sandbox_session_id: UUID, validation_job_id: UUID,
+        payload: ValidationResultPayload, completed_at: datetime,
+    ) -> SandboxSessionRecord: ...
+
+    def get_sandbox_validation_evidence(
+        self, *, sandbox_session_id: UUID,
+    ) -> tuple[ValidationResultPayload, str] | None: ...
+
     def get_validation_job(
         self, validation_job_id: UUID
     ) -> StoredValidationJob | None: ...
@@ -703,6 +717,71 @@ _CREATE_SANDBOX_SESSIONS_SQL = """
 """
 
 
+_SANDBOX_VALIDATION_EXECUTION_COLUMNS = {
+    "sandbox_session_id",
+    "validation_job_id",
+    "request_id",
+    "source_target_id",
+    "source_profile_id",
+    "source_compatibility_report_id",
+    "job_json",
+    "status",
+    "dispatched_at",
+    "completed_at",
+    "result_sha256",
+    "payload_json",
+}
+
+_CREATE_SANDBOX_VALIDATION_EXECUTIONS_SQL = """
+    CREATE TABLE sandbox_validation_executions (
+        sandbox_session_id TEXT PRIMARY KEY,
+        validation_job_id TEXT NOT NULL UNIQUE,
+        request_id TEXT NOT NULL UNIQUE,
+        source_target_id TEXT NOT NULL,
+        source_profile_id TEXT NOT NULL,
+        source_compatibility_report_id TEXT NOT NULL,
+        job_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+            status IN ('DISPATCHED', 'COMPLETED')
+        ),
+        dispatched_at TEXT NOT NULL,
+        completed_at TEXT,
+        result_sha256 TEXT CHECK (
+            result_sha256 IS NULL OR (
+                length(result_sha256) = 64
+                AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+            )
+        ),
+        payload_json TEXT,
+        CHECK (
+            (
+                status = 'DISPATCHED'
+                AND completed_at IS NULL
+                AND result_sha256 IS NULL
+                AND payload_json IS NULL
+            ) OR (
+                status = 'COMPLETED'
+                AND completed_at IS NOT NULL
+                AND result_sha256 IS NOT NULL
+                AND payload_json IS NOT NULL
+            )
+        ),
+        FOREIGN KEY (validation_job_id)
+            REFERENCES validation_jobs(validation_job_id),
+        FOREIGN KEY (
+            source_target_id,
+            source_profile_id,
+            source_compatibility_report_id,
+            sandbox_session_id
+        ) REFERENCES sandbox_sessions (
+            source_target_id,
+            source_profile_id,
+            source_compatibility_report_id,
+            sandbox_session_id
+        )
+    )
+"""
+
 def _normalized_schema_sql(value: str) -> str:
     """Normalize insignificant SQL whitespace for an exact schema fingerprint."""
 
@@ -963,6 +1042,72 @@ class SQLiteControllerRepository:
                 connection.execute(
                     "RELEASE SAVEPOINT sentra_m6e_sandbox_schema"
                 )
+
+            connection.execute(
+                "SAVEPOINT sentra_m6e_validation_evidence_schema"
+            )
+            try:
+                self._initialize_sandbox_validation_storage(connection)
+            except BaseException:
+                connection.execute(
+                    "ROLLBACK TO SAVEPOINT "
+                    "sentra_m6e_validation_evidence_schema"
+                )
+                connection.execute(
+                    "RELEASE SAVEPOINT "
+                    "sentra_m6e_validation_evidence_schema"
+                )
+                raise
+            else:
+                connection.execute(
+                    "RELEASE SAVEPOINT "
+                    "sentra_m6e_validation_evidence_schema"
+                )
+
+    @staticmethod
+    def _initialize_sandbox_validation_storage(
+        connection: sqlite3.Connection,
+    ) -> None:
+        table_name = "sandbox_validation_executions"
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+
+        if row is None:
+            connection.execute(
+                _CREATE_SANDBOX_VALIDATION_EXECUTIONS_SQL
+            )
+        else:
+            if (
+                not isinstance(row["sql"], str)
+                or _normalized_schema_sql(row["sql"])
+                != _normalized_schema_sql(
+                    _CREATE_SANDBOX_VALIDATION_EXECUTIONS_SQL
+                )
+            ):
+                raise ControllerStorageSecurityError(
+                    "sandbox validation schema is not recognized"
+                )
+
+        columns = {
+            item["name"]
+            for item in connection.execute(
+                "PRAGMA table_info(sandbox_validation_executions)"
+            ).fetchall()
+        }
+        if columns != _SANDBOX_VALIDATION_EXECUTION_COLUMNS:
+            raise ControllerStorageSecurityError(
+                "sandbox validation columns are not recognized"
+            )
+
+        if connection.execute(
+            "PRAGMA foreign_key_check(sandbox_validation_executions)"
+        ).fetchall():
+            raise ControllerStorageSecurityError(
+                "sandbox validation lineage is invalid"
+            )
 
     @staticmethod
     def _initialize_compatibility_reports(connection: sqlite3.Connection) -> None:
@@ -1558,6 +1703,11 @@ class SQLiteControllerRepository:
                     """
                     SELECT * FROM validation_jobs
                     WHERE target_id = ? AND status = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM sandbox_validation_executions AS sve
+                          WHERE sve.validation_job_id =
+                                validation_jobs.validation_job_id
+                      )
                     ORDER BY created_at, validation_job_id LIMIT ?
                     """,
                     (str(target_id), JobStatus.PENDING.value, remaining),
@@ -2230,6 +2380,413 @@ class SQLiteControllerRepository:
                     "validation job ID, request ID, or lineage conflicts"
                 ) from error
         return job
+
+
+    def dispatch_sandbox_validation_job(
+        self,
+        *,
+        sandbox_session_id: UUID,
+        validation_job_id: UUID,
+        dispatched_at: datetime,
+        pending_job: ValidationJobRecord | None = None,
+    ) -> tuple[ValidationJobRecord, SandboxSessionRecord]:
+        """Atomically reserve one authorized job for one READY sandbox."""
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            session_row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(sandbox_session_id),),
+            ).fetchone()
+
+            job_row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+                (str(validation_job_id),),
+            ).fetchone()
+
+            if session_row is None:
+                raise StorageNotFoundError("sandbox session does not exist")
+
+            session = self._stored_sandbox_session_from_row(
+                connection, session_row
+            )
+            if pending_job is None:
+                if job_row is None:
+                    raise StorageNotFoundError(
+                        "validation authorization does not exist"
+                    )
+                stored = self._stored_validation_job_from_row(
+                    connection, job_row
+                )
+                job = stored.job
+                assigned_agent_id = stored.assigned_agent_id
+            else:
+                # This is the new safe entry point: the validation job does not
+                # exist until its sandbox reservation is committed atomically.
+                if type(pending_job) is not ValidationJobRecord or job_row is not None:
+                    raise StorageConflictError(
+                        "new sandbox authorization is invalid or already exists"
+                    )
+                try:
+                    job = ValidationJobRecord.model_validate_json(
+                        pending_job.model_dump_json(), strict=True
+                    )
+                except (TypeError, ValueError, ValidationError) as error:
+                    raise StorageConflictError(
+                        "new sandbox validation authorization is invalid"
+                    ) from error
+                if job.validation_job_id != validation_job_id:
+                    raise StorageConflictError(
+                        "new sandbox validation identity differs from authorization"
+                    )
+                if connection.execute(
+                    "SELECT 1 FROM validation_jobs WHERE request_id = ?",
+                    (str(job.request_id),),
+                ).fetchone() is not None:
+                    raise StorageConflictError(
+                        "sandbox validation request has already been used"
+                    )
+                if connection.execute(
+                    "SELECT 1 FROM jobs WHERE job_id = ?",
+                    (str(job.validation_job_id),),
+                ).fetchone() is not None:
+                    raise StorageConflictError("controller job identity conflicts")
+                self._validate_validation_job_lineage(connection, job)
+                assigned_agent_id = None
+
+            if (
+                session.status is not SandboxSessionStatus.READY
+                or job.status is not JobStatus.PENDING
+                or assigned_agent_id is not None
+                or session.ready_at is None
+                or dispatched_at < session.ready_at
+                or dispatched_at < job.created_at
+                or job.target_id != session.source_target_id
+                or job.profile_id != session.source_profile_id
+                or job.compatibility_report_id
+                != session.source_compatibility_report_id
+                or job.control_id != session.control_id
+                or job.compatibility_reference
+                != session.compatibility_reference
+            ):
+                raise StorageConflictError(
+                    "sandbox dispatch authorization or lineage is invalid"
+                )
+
+            existing = connection.execute(
+                """
+                SELECT 1 FROM sandbox_validation_executions
+                WHERE sandbox_session_id = ? OR validation_job_id = ?
+                """,
+                (str(sandbox_session_id), str(validation_job_id)),
+            ).fetchone()
+
+            if existing is not None:
+                raise StorageConflictError(
+                    "sandbox or job has already been reserved"
+                )
+
+            dispatched_values = job.model_dump(mode="python")
+            dispatched_values["status"] = JobStatus.DISPATCHED
+            dispatched_values["dispatched_at"] = dispatched_at
+
+            dispatched_job = ValidationJobRecord.model_validate(
+                dispatched_values,
+                strict=True,
+            )
+
+            session_values = session.model_dump(mode="python")
+            session_values["status"] = SandboxSessionStatus.VALIDATING
+            session_values["validation_started_at"] = dispatched_at
+
+            validating_session = SandboxSessionRecord.model_validate(
+                session_values,
+                strict=True,
+            )
+
+            job_json = json.dumps(
+                dispatched_job.model_dump(mode="json"),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+            try:
+                if pending_job is not None:
+                    reference_json = _canonical_compatibility_reference_json(
+                        job.compatibility_reference
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO validation_jobs (
+                            validation_job_id, request_id, target_id, profile_id,
+                            compatibility_report_id, assigned_agent_id, job_type,
+                            control_id, validation_mode, execution_mode,
+                            administrator_approval_acknowledged,
+                            compatibility_risk_acknowledged,
+                            compatibility_override_reason,
+                            compatibility_reference_json, status, created_at,
+                            dispatched_at, completed_at
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL
+                        )
+                        """,
+                        (
+                            str(job.validation_job_id), str(job.request_id),
+                            str(job.target_id), str(job.profile_id),
+                            str(job.compatibility_report_id), job.job_type.value,
+                            job.control_id, job.validation_mode.value,
+                            job.execution_mode.value,
+                            int(job.administrator_approval_acknowledged),
+                            int(job.compatibility_risk_acknowledged),
+                            job.compatibility_override_reason, reference_json,
+                            JobStatus.PENDING.value, job.created_at.isoformat(),
+                        ),
+                    )
+                changed = connection.execute(
+                    """
+                    UPDATE sandbox_sessions
+                    SET status = 'VALIDATING', validation_started_at = ?
+                    WHERE sandbox_session_id = ? AND status = 'READY'
+                    """,
+                    (dispatched_at.isoformat(), str(sandbox_session_id)),
+                )
+
+                if changed.rowcount != 1:
+                    raise StorageConflictError(
+                        "sandbox changed during reservation"
+                    )
+
+                connection.execute(
+                    """
+                    INSERT INTO sandbox_validation_executions (
+                        sandbox_session_id, validation_job_id, request_id,
+                        source_target_id, source_profile_id,
+                        source_compatibility_report_id,
+                        job_json, status, dispatched_at,
+                        completed_at, result_sha256, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, NULL, NULL, NULL)
+                    """,
+                    (
+                        str(sandbox_session_id),
+                        str(validation_job_id),
+                        str(job.request_id),
+                        str(job.target_id),
+                        str(job.profile_id),
+                        str(job.compatibility_report_id),
+                        job_json,
+                        dispatched_at.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError(
+                    "sandbox reservation violates storage lineage"
+                ) from error
+
+        return dispatched_job, validating_session
+
+
+
+    def complete_sandbox_validation_job(
+        self,
+        *,
+        sandbox_session_id: UUID,
+        validation_job_id: UUID,
+        payload: ValidationResultPayload,
+        completed_at: datetime,
+    ) -> SandboxSessionRecord:
+        """Atomically save M5 evidence and complete its sandbox session."""
+        from src.controller.validation import (
+            canonical_validation_payload_json,
+            require_payload_matches_job,
+        )
+
+        if type(payload) is not ValidationResultPayload:
+            raise StorageConflictError("sandbox result payload has invalid type")
+        try:
+            verified_payload = ValidationResultPayload.model_validate_json(
+                payload.model_dump_json(), strict=True
+            )
+            canonical = canonical_validation_payload_json(verified_payload)
+        except (ValueError, TypeError, ValidationError) as error:
+            raise StorageConflictError("sandbox result payload is invalid") from error
+
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            execution = connection.execute(
+                "SELECT * FROM sandbox_validation_executions "
+                "WHERE sandbox_session_id = ? AND validation_job_id = ?",
+                (str(sandbox_session_id), str(validation_job_id)),
+            ).fetchone()
+            session_row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(sandbox_session_id),),
+            ).fetchone()
+            job_row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+                (str(validation_job_id),),
+            ).fetchone()
+            if execution is None or session_row is None or job_row is None:
+                raise StorageNotFoundError("sandbox validation execution is missing")
+
+            session = self._stored_sandbox_session_from_row(connection, session_row)
+            stored = self._stored_validation_job_from_row(connection, job_row)
+            try:
+                job = ValidationJobRecord.model_validate_json(
+                    execution["job_json"], strict=True
+                )
+            except (TypeError, ValueError, ValidationError) as error:
+                raise StorageConflictError(
+                    "sandbox dispatched authorization is invalid"
+                ) from error
+
+            dispatched_at = _parse_datetime(execution["dispatched_at"])
+            if dispatched_at is None:
+                raise StorageConflictError("sandbox dispatch timestamp is missing")
+            expected_job = stored.job.model_copy(
+                update={"status": JobStatus.DISPATCHED, "dispatched_at": dispatched_at}
+            )
+            if (
+                execution["status"] != "DISPATCHED"
+                or session.status is not SandboxSessionStatus.VALIDATING
+                or stored.job.status is not JobStatus.PENDING
+                or stored.assigned_agent_id is not None
+                or session.validation_started_at != dispatched_at
+                or dispatched_at != job.dispatched_at
+                or job != expected_job
+                or job.validation_job_id != validation_job_id
+                or execution["validation_job_id"] != str(validation_job_id)
+                or execution["request_id"] != str(job.request_id)
+                or execution["source_target_id"] != str(job.target_id)
+                or execution["source_profile_id"] != str(job.profile_id)
+                or execution["source_compatibility_report_id"]
+                != str(job.compatibility_report_id)
+                or job.target_id != session.source_target_id
+                or job.profile_id != session.source_profile_id
+                or job.compatibility_report_id
+                != session.source_compatibility_report_id
+                or job.compatibility_reference != session.compatibility_reference
+                or completed_at < dispatched_at
+            ):
+                raise StorageConflictError("sandbox evidence authorization is invalid")
+            try:
+                require_payload_matches_job(verified_payload, job)
+            except ValueError as error:
+                raise StorageConflictError("M5 evidence lineage is invalid") from error
+
+            completed_values = session.model_dump(mode="python")
+            completed_values["status"] = SandboxSessionStatus.COMPLETED
+            completed_values["completed_at"] = completed_at
+            completed_session = SandboxSessionRecord.model_validate(
+                completed_values, strict=True
+            )
+            evidence_hash = _sha256(canonical)
+            first = connection.execute(
+                """UPDATE sandbox_validation_executions
+                   SET status = 'COMPLETED', completed_at = ?,
+                       result_sha256 = ?, payload_json = ?
+                   WHERE sandbox_session_id = ? AND validation_job_id = ?
+                     AND status = 'DISPATCHED'""",
+                (completed_at.isoformat(), evidence_hash, canonical,
+                 str(sandbox_session_id), str(validation_job_id)),
+            )
+            if first.rowcount != 1:
+                raise StorageConflictError("sandbox evidence changed during completion")
+            second = connection.execute(
+                """UPDATE sandbox_sessions
+                   SET status = 'COMPLETED', completed_at = ?
+                   WHERE sandbox_session_id = ? AND status = 'VALIDATING'""",
+                (completed_at.isoformat(), str(sandbox_session_id)),
+            )
+            if second.rowcount != 1:
+                raise StorageConflictError("sandbox session changed during completion")
+        return completed_session
+
+    def get_sandbox_validation_evidence(
+        self,
+        *,
+        sandbox_session_id: UUID,
+    ) -> tuple[ValidationResultPayload, str] | None:
+        """Read and verify the sealed Controller-owned M5 result and SHA-256."""
+        from src.controller.validation import (
+            canonical_validation_payload_json,
+            require_payload_matches_job,
+        )
+
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM sandbox_validation_executions "
+                "WHERE sandbox_session_id = ?",
+                (str(sandbox_session_id),),
+            ).fetchone()
+            if row is None or row["status"] != "COMPLETED":
+                return None
+            session_row = connection.execute(
+                "SELECT * FROM sandbox_sessions WHERE sandbox_session_id = ?",
+                (str(sandbox_session_id),),
+            ).fetchone()
+            job_row = connection.execute(
+                "SELECT * FROM validation_jobs WHERE validation_job_id = ?",
+                (row["validation_job_id"],),
+            ).fetchone()
+            if session_row is None or job_row is None:
+                raise StorageConflictError("sandbox evidence lineage is missing")
+            session = self._stored_sandbox_session_from_row(connection, session_row)
+            stored = self._stored_validation_job_from_row(connection, job_row)
+            try:
+                job = ValidationJobRecord.model_validate_json(
+                    row["job_json"], strict=True
+                )
+                payload = ValidationResultPayload.model_validate_json(
+                    row["payload_json"], strict=True
+                )
+                canonical = canonical_validation_payload_json(payload)
+                require_payload_matches_job(payload, job)
+            except (TypeError, ValueError, ValidationError) as error:
+                raise StorageConflictError("stored sandbox M5 evidence is invalid") from error
+            dispatched_at = _parse_datetime(row["dispatched_at"])
+            if dispatched_at is None:
+                raise StorageConflictError("sandbox evidence dispatch time is missing")
+            authoritative_job = stored.job.model_copy(
+                update={
+                    "status": JobStatus.DISPATCHED,
+                    "dispatched_at": dispatched_at,
+                }
+            )
+            if (
+                job != authoritative_job
+                or session.source_target_id != job.target_id
+                or session.source_profile_id != job.profile_id
+                or session.source_compatibility_report_id
+                != job.compatibility_report_id
+                or session.validation_started_at != dispatched_at
+            ):
+                raise StorageConflictError("sandbox M5 job authorization differs from storage")
+            if (
+                session.status not in (
+                    SandboxSessionStatus.COMPLETED, SandboxSessionStatus.CLOSED
+                )
+                or stored.assigned_agent_id is not None
+                or stored.job.status is not JobStatus.PENDING
+                or job.status is not JobStatus.DISPATCHED
+                or job.validation_job_id != stored.job.validation_job_id
+                or job.compatibility_reference != session.compatibility_reference
+                or row["validation_job_id"] != str(job.validation_job_id)
+                or row["request_id"] != str(job.request_id)
+                or row["source_target_id"] != str(job.target_id)
+                or row["source_profile_id"] != str(job.profile_id)
+                or row["source_compatibility_report_id"]
+                != str(job.compatibility_report_id)
+                or _parse_datetime(row["dispatched_at"]) != job.dispatched_at
+                or _parse_datetime(row["completed_at"]) != session.completed_at
+                or row["payload_json"] != canonical
+                or _sha256(canonical) != row["result_sha256"]
+            ):
+                raise StorageConflictError("sandbox M5 evidence integrity check failed")
+            return payload, row["result_sha256"]
+
 
     def get_validation_job(
         self,

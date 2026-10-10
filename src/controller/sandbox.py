@@ -16,10 +16,13 @@ from enum import StrEnum
 import hashlib
 import importlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import stat
+import threading
+import time
 from typing import Callable, Literal, Protocol
 from uuid import UUID, uuid5
 from xml.etree import ElementTree as ET
@@ -46,6 +49,26 @@ _DOMAIN_NAMESPACE = UUID("3f928c87-cb68-49d7-b17a-18d3131958dc")
 _DOMAIN_METADATA_NAMESPACE = "urn:sentra:sandbox:v1"
 _INSTANCE_PATTERN = r"^sentra-sbx-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_LIBVIRT_CHANNEL_READY_TIMEOUT_SECONDS = 30.0
+_LIBVIRT_CHANNEL_READY_POLL_INTERVAL_SECONDS = 0.05
+_LOG = logging.getLogger(__name__)
+_LIBVIRT_EVENT_REGISTRATION_LOCK = threading.Lock()
+_LIBVIRT_EVENT_RUN_LOCK = threading.Lock()
+_LIBVIRT_EVENT_MODULES: set[object] = set()
+
+
+def _ensure_default_libvirt_events(libvirt: object) -> None:
+    """Register libvirt's default event implementation before opening a stream."""
+
+    register = getattr(libvirt, "virEventRegisterDefaultImpl", None)
+    if not callable(register):
+        raise SandboxProviderUnavailableError("libvirt event API is unavailable")
+    with _LIBVIRT_EVENT_REGISTRATION_LOCK:
+        if libvirt in _LIBVIRT_EVENT_MODULES:
+            return
+        if register() == -1:
+            raise SandboxProviderUnavailableError("libvirt event API is unavailable")
+        _LIBVIRT_EVENT_MODULES.add(libvirt)
 
 
 class SandboxRuntimeState(StrEnum):
@@ -877,6 +900,58 @@ class LocalNestedVmProvider:
             )
         return self._validate_observation(plan, observation)
 
+    def open_validation_channel(
+        self,
+        sandbox_session_id: UUID,
+    ) -> "_LibvirtValidationStream":
+        """Open only the fixed SENTRA channel for an existing sandbox."""
+
+        plan = self._plan(
+            sandbox_session_id,
+            prepare_directory=False,
+        )
+
+        opener = getattr(self._backend, "open_validation_channel", None)
+        if not callable(opener):
+            raise SandboxProviderUnavailableError(
+                "sandbox backend does not support the SENTRA validation channel"
+            )
+
+        base_before = _base_identity(
+            _stat_trusted_base_image(plan.base_image)
+        )
+
+        channel = None
+        try:
+            channel = opener(plan)
+            if channel is None:
+                raise SandboxProviderUnavailableError(
+                    "sandbox backend returned no validation channel"
+                )
+        except SandboxProviderError:
+            raise
+        except Exception as error:
+            raise SandboxProviderUnavailableError(
+                "sandbox validation channel could not be opened"
+            ) from error
+        finally:
+            base_after = _base_identity(
+                _stat_trusted_base_image(plan.base_image)
+            )
+            if base_after != base_before:
+                if channel is not None:
+                    abort = getattr(channel, "abort", None)
+                    if callable(abort):
+                        try:
+                            abort()
+                        except Exception:
+                            pass
+                raise SandboxProviderSecurityError(
+                    "sandbox base image changed while opening validation channel"
+                )
+
+        return channel
+
     def destroy(self, sandbox_session_id: UUID) -> None:
         plan = self._plan(sandbox_session_id, prepare_directory=False)
         base_before = _base_identity(_stat_trusted_base_image(plan.base_image))
@@ -897,6 +972,208 @@ class LocalNestedVmProvider:
                 raise SandboxProviderSecurityError(
                     "sandbox base image changed during destruction"
                 )
+
+
+class _LibvirtValidationStream:
+    """BinaryIO-like adapter over SENTRA's fixed libvirt validation channel."""
+
+    def __init__(
+        self,
+        stream: object,
+        connection: object,
+        libvirt: object,
+        *,
+        timeout_seconds: float = 30.0,
+        retry_seconds: float = 0.05,
+    ) -> None:
+        self._stream = stream
+        self._connection = connection
+        self._libvirt = libvirt
+        self._timeout_seconds = timeout_seconds
+        self._retry_seconds = retry_seconds
+        self._terminal = False
+        self._connection_closed = False
+
+    def _wait_for_event(self, event_name: str, deadline: float) -> None:
+        """Pump one bounded libvirt event-loop turn after EAGAIN (-2)."""
+
+        event_flag = getattr(self._libvirt, event_name, None)
+        error_flag = getattr(self._libvirt, "VIR_STREAM_EVENT_ERROR", None)
+        hangup_flag = getattr(self._libvirt, "VIR_STREAM_EVENT_HANGUP", None)
+        add_callback = getattr(self._stream, "eventAddCallback", None)
+        remove_callback = getattr(self._stream, "eventRemoveCallback", None)
+        add_timeout = getattr(self._libvirt, "virEventAddTimeout", None)
+        remove_timeout = getattr(self._libvirt, "virEventRemoveTimeout", None)
+        run_events = getattr(self._libvirt, "virEventRunDefaultImpl", None)
+        if (
+            any(type(flag) is not int for flag in (event_flag, error_flag, hangup_flag))
+            or not all(callable(method) for method in (
+                add_callback, remove_callback, add_timeout, remove_timeout, run_events
+            ))
+        ):
+            raise OSError("libvirt stream event capability is unavailable")
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        timeout_ms = max(1, min(int(self._retry_seconds * 1000), int(remaining * 1000)))
+        observed_events = 0
+
+        def on_stream_event(_stream: object, events: int, _opaque: object) -> None:
+            nonlocal observed_events
+            observed_events |= events
+
+        def on_timeout(_timer: int, _opaque: object) -> None:
+            pass
+
+        # The default event loop is process-global and must not be entered by
+        # two Controller requests at once.  A short libvirt timer bounds each
+        # iteration; the outer deadline remains the existing 30 seconds.
+        with _LIBVIRT_EVENT_RUN_LOCK:
+            callback_added = False
+            timer_id: int | None = None
+            try:
+                if add_callback(event_flag | error_flag | hangup_flag, on_stream_event, None) == -1:
+                    raise OSError("libvirt stream event registration failed")
+                callback_added = True
+                timer_id = add_timeout(timeout_ms, on_timeout, None)
+                if type(timer_id) is not int or timer_id < 0:
+                    raise OSError("libvirt stream event timer failed")
+                if run_events() == -1:
+                    raise OSError("libvirt stream event dispatch failed")
+            finally:
+                try:
+                    if timer_id is not None and timer_id >= 0:
+                        remove_timeout(timer_id)
+                finally:
+                    if callback_added:
+                        remove_callback()
+        if observed_events & error_flag:
+            raise OSError("libvirt stream signalled an error")
+
+    def _require_open(self) -> None:
+        if self._terminal:
+            raise ValueError("SENTRA validation stream is closed")
+
+    def _close_connection(self) -> None:
+        if self._connection_closed:
+            return
+        self._connection_closed = True
+        close = getattr(self._connection, "close", None)
+        if callable(close):
+            close()
+
+    def read(self, size: int) -> bytes:
+        self._require_open()
+        if type(size) is not int or size <= 0:
+            raise ValueError("SENTRA validation stream read size is invalid")
+
+        deadline = time.monotonic() + self._timeout_seconds
+        try:
+            while True:
+                data = self._stream.recv(size)
+
+                if data == -2:
+                    if time.monotonic() >= deadline:
+                        _LOG.warning(
+                            "sandbox controller stage=stream_read_timeout "
+                            "exception_type=TimeoutError"
+                        )
+                        raise TimeoutError("SENTRA validation stream read timed out")
+                    self._wait_for_event("VIR_STREAM_EVENT_READABLE", deadline)
+                    continue
+
+                if type(data) is not bytes or len(data) > size:
+                    raise OSError("libvirt validation stream returned invalid data")
+
+                if not data:
+                    _LOG.warning("sandbox controller stage=stream_peer_eof")
+
+                return data
+        except Exception:
+            try:
+                self.abort()
+            except Exception:
+                pass
+            raise
+
+    def write(self, data: bytes) -> int:
+        self._require_open()
+        if type(data) is not bytes:
+            raise TypeError("SENTRA validation stream accepts bytes only")
+        if not data:
+            return 0
+
+        deadline = time.monotonic() + self._timeout_seconds
+        try:
+            while True:
+                count = self._stream.send(data)
+
+                if count == -2:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("SENTRA validation stream write timed out")
+                    self._wait_for_event("VIR_STREAM_EVENT_WRITABLE", deadline)
+                    continue
+
+                if (
+                    type(count) is not int
+                    or count <= 0
+                    or count > len(data)
+                ):
+                    raise OSError("libvirt validation stream write failed")
+
+                return count
+        except Exception:
+            try:
+                self.abort()
+            except Exception:
+                pass
+            raise
+
+    def finish(self) -> None:
+        if self._terminal:
+            return
+
+        try:
+            self._stream.finish()
+        except Exception:
+            try:
+                self._stream.abort()
+            except Exception:
+                pass
+            self._terminal = True
+            self._close_connection()
+            raise
+
+        self._terminal = True
+        self._close_connection()
+
+    def abort(self) -> None:
+        if self._terminal:
+            return
+
+        try:
+            self._stream.abort()
+        finally:
+            self._terminal = True
+            self._close_connection()
+
+    def close(self) -> None:
+        self.abort()
+
+    def __enter__(self) -> "_LibvirtValidationStream":
+        self._require_open()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        if exc_type is None:
+            self.finish()
+        else:
+            try:
+                self.abort()
+            except Exception:
+                pass
+        return False
 
 
 class LibvirtBackend:
@@ -2059,6 +2336,138 @@ class LibvirtBackend:
             return self._observation(plan, self._runtime_state(domain, libvirt))
         finally:
             self._close(connection)
+
+    def open_validation_channel(
+        self,
+        plan: LocalNestedVmPlan,
+    ) -> _LibvirtValidationStream:
+        """Open SENTRA's sole fixed virtio validation channel."""
+
+        self._expect_libvirt_plan(plan)
+        # The event implementation must exist before opening the connection
+        # used by the nonblocking stream (and before the inspection connection).
+        _ensure_default_libvirt_events(self._load())
+
+        observation = self.inspect(plan)
+        if observation.runtime_state is not SandboxRuntimeState.RUNNING:
+            raise SandboxInspectionError(
+                "sandbox must be running before validation channel access"
+            )
+
+        libvirt, connection = self._open(plan)
+        stream = None
+
+        try:
+            domain = self._lookup_domain(connection, libvirt, plan)
+            if domain is None:
+                raise SandboxInspectionError(
+                    "sandbox domain disappeared before channel access"
+                )
+
+            self._domain_xml_identity(domain, plan)
+
+            if (
+                self._runtime_state(domain, libvirt)
+                is not SandboxRuntimeState.RUNNING
+            ):
+                raise SandboxInspectionError(
+                    "sandbox is not running during validation channel access"
+                )
+
+            new_stream = getattr(connection, "newStream", None)
+            if not callable(new_stream):
+                raise SandboxProviderUnavailableError(
+                    "libvirt stream API is unavailable"
+                )
+
+            nonblocking_flag = getattr(
+                libvirt,
+                "VIR_STREAM_NONBLOCK",
+                None,
+            )
+            if type(nonblocking_flag) is not int:
+                raise SandboxProviderUnavailableError(
+                    "libvirt non-blocking stream capability is unavailable"
+                )
+
+            stream = new_stream(nonblocking_flag)
+            if stream is None:
+                raise SandboxProviderUnavailableError(
+                    "libvirt failed to create validation stream"
+                )
+
+            open_channel = getattr(domain, "openChannel", None)
+            if not callable(open_channel):
+                raise SandboxProviderUnavailableError(
+                    "libvirt domain channel API is unavailable"
+                )
+
+            open_channel(
+                SENTRA_VALIDATION_CHANNEL_NAME,
+                stream,
+                0,
+            )
+
+            # openChannel() attaches the host stream but does not itself prove
+            # that a process in the guest has opened the virtio port. Active
+            # domain XML reports that guest-side state; do not send context
+            # until the guest receiver is actually connected.
+            deadline = (
+                time.monotonic()
+                + _LIBVIRT_CHANNEL_READY_TIMEOUT_SECONDS
+            )
+            while True:
+                active_root = self._domain_xml_identity(domain, plan)
+                target = active_root.find("devices/channel/target")
+                if target is None:
+                    raise SandboxProviderSecurityError(
+                        "libvirt SENTRA validation channel disappeared"
+                    )
+                if target.get("state") == "connected":
+                    _LOG.warning("sandbox controller stage=guest_channel_connected")
+                    break
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SandboxProviderUnavailableError(
+                        "guest SENTRA validation channel did not become ready"
+                    )
+                time.sleep(
+                    min(
+                        _LIBVIRT_CHANNEL_READY_POLL_INTERVAL_SECONDS,
+                        remaining,
+                    )
+                )
+
+            return _LibvirtValidationStream(
+                stream,
+                connection,
+                libvirt,
+            )
+
+        except SandboxProviderError:
+            if stream is not None:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    try:
+                        abort()
+                    except Exception:
+                        pass
+            self._close(connection)
+            raise
+
+        except Exception as error:
+            if stream is not None:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    try:
+                        abort()
+                    except Exception:
+                        pass
+            self._close(connection)
+            raise SandboxProviderUnavailableError(
+                "libvirt SENTRA validation channel is unavailable"
+            ) from error
 
     def destroy(self, plan: LocalNestedVmPlan) -> None:
         self._expect_libvirt_plan(plan)

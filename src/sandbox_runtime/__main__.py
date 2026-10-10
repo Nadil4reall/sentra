@@ -7,6 +7,7 @@ import sys
 from src.sandbox_m5_protocol.models import SandboxM5SessionResult
 
 from .config import local_sandbox_operator_acknowledged
+from .receiver import _diagnostic_failure
 from .session_channel import open_fixed_validation_channel_and_run_session
 
 
@@ -27,8 +28,9 @@ def main() -> int:
         result = open_fixed_validation_channel_and_run_session(
             sandbox_operator_acknowledged=sandbox_operator_acknowledged,
         )
-    except Exception:
-        # Keep local policy, receiver, and M5 diagnostics out of appliance logs.
+    except Exception as error:
+        # Only the exception class is recorded; never log exception text or inputs.
+        _diagnostic_failure(error)
         return EXIT_SESSION_FAILURE
 
     if type(result) is SandboxM5SessionResult:

@@ -163,6 +163,7 @@ def test_fixed_channel_opener_accepts_only_local_ack_and_opens_fixed_device(
 def test_entrypoint_fails_closed_without_printing_exception_details(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(entrypoint.sys, "argv", ["sentra-sandbox"])
 
@@ -179,6 +180,14 @@ def test_entrypoint_fails_closed_without_printing_exception_details(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+    assert any(
+        "guest failure=RuntimeError" in record.getMessage()
+        for record in caplog.records
+    )
+    assert all(
+        "manifest=/secret/path" not in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_entrypoint_requires_a_session_result_before_success(
