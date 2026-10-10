@@ -208,6 +208,11 @@ class ControllerRepository(Protocol):
         self, job: EnforcementJobRecord,
     ) -> EnforcementJobRecord: ...
 
+    def poll_enforcement_jobs(
+        self, *, target_id: UUID, agent_id: UUID,
+        dispatched_at: datetime, limit: int,
+    ) -> list[EnforcementJobRecord]: ...
+
     def get_validation_job(
         self, validation_job_id: UUID
     ) -> StoredValidationJob | None: ...
@@ -791,10 +796,10 @@ _ENFORCEMENT_JOB_COLUMNS = {
     "enforcement_job_id", "request_id", "target_id", "profile_id",
     "compatibility_report_id", "sandbox_session_id", "control_id",
     "job_type", "administrator_enforcement_approval_acknowledged",
-    "sandbox_evidence_sha256", "status", "created_at", "dispatched_at",
+    "sandbox_evidence_sha256", "status", "created_at", "assigned_agent_id", "dispatched_at",
     "completed_at",
 }
-_CREATE_ENFORCEMENT_JOBS_SQL = """
+_CREATE_ENFORCEMENT_JOBS_M7A_SQL = """
     CREATE TABLE enforcement_jobs (
         enforcement_job_id TEXT PRIMARY KEY,
         request_id TEXT NOT NULL UNIQUE,
@@ -834,6 +839,57 @@ _CREATE_ENFORCEMENT_JOBS_SQL = """
         ),
         FOREIGN KEY (sandbox_session_id)
             REFERENCES sandbox_validation_executions(sandbox_session_id)
+    )
+"""
+_CREATE_ENFORCEMENT_JOBS_SQL = """
+    CREATE TABLE enforcement_jobs (
+        enforcement_job_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        target_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        compatibility_report_id TEXT NOT NULL,
+        sandbox_session_id TEXT NOT NULL,
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        job_type TEXT NOT NULL CHECK (job_type = 'ENFORCE_CONTROL'),
+        administrator_enforcement_approval_acknowledged INTEGER NOT NULL
+            CHECK (administrator_enforcement_approval_acknowledged = 1),
+        sandbox_evidence_sha256 TEXT NOT NULL CHECK (
+            length(sandbox_evidence_sha256) = 64
+            AND sandbox_evidence_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
+        created_at TEXT NOT NULL,
+        assigned_agent_id TEXT,
+        dispatched_at TEXT,
+        completed_at TEXT CHECK (completed_at IS NULL),
+        CHECK (
+            (status = 'pending' AND assigned_agent_id IS NULL
+                AND dispatched_at IS NULL)
+            OR (status = 'dispatched' AND assigned_agent_id IS NOT NULL
+                AND dispatched_at IS NOT NULL)
+        ),
+        UNIQUE (
+            target_id, profile_id, compatibility_report_id,
+            sandbox_session_id, enforcement_job_id
+        ),
+        FOREIGN KEY (target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id),
+        FOREIGN KEY (target_id, profile_id, compatibility_report_id)
+            REFERENCES compatibility_reports(
+                target_id, profile_id, compatibility_report_id
+            ),
+        FOREIGN KEY (
+            target_id, profile_id, compatibility_report_id,
+            sandbox_session_id
+        ) REFERENCES sandbox_sessions (
+            source_target_id, source_profile_id,
+            source_compatibility_report_id, sandbox_session_id
+        ),
+        FOREIGN KEY (sandbox_session_id)
+            REFERENCES sandbox_validation_executions(sandbox_session_id),
+        FOREIGN KEY (target_id, assigned_agent_id)
+            REFERENCES agents(target_id, agent_id)
     )
 """
 
@@ -1137,6 +1193,32 @@ class SQLiteControllerRepository:
         ).fetchone()
         if row is None:
             connection.execute(_CREATE_ENFORCEMENT_JOBS_SQL)
+        elif (
+            isinstance(row["sql"], str)
+            and _normalized_schema_sql(row["sql"])
+            == _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7A_SQL)
+        ):
+            # Exact M7-A schema only: preserve its pending rows in an atomic,
+            # fail-closed table migration. No dispatched M7-A rows exist.
+            connection.execute(
+                "ALTER TABLE enforcement_jobs RENAME TO enforcement_jobs_m7a_backup"
+            )
+            connection.execute(_CREATE_ENFORCEMENT_JOBS_SQL)
+            connection.execute(
+                """INSERT INTO enforcement_jobs (
+                    enforcement_job_id, request_id, target_id, profile_id,
+                    compatibility_report_id, sandbox_session_id, control_id,
+                    job_type, administrator_enforcement_approval_acknowledged,
+                    sandbox_evidence_sha256, status, created_at,
+                    assigned_agent_id, dispatched_at, completed_at
+                ) SELECT enforcement_job_id, request_id, target_id, profile_id,
+                         compatibility_report_id, sandbox_session_id, control_id,
+                         job_type, administrator_enforcement_approval_acknowledged,
+                         sandbox_evidence_sha256, status, created_at,
+                         NULL, dispatched_at, completed_at
+                  FROM enforcement_jobs_m7a_backup"""
+            )
+            connection.execute("DROP TABLE enforcement_jobs_m7a_backup")
         elif (
             not isinstance(row["sql"], str)
             or _normalized_schema_sql(row["sql"])
@@ -2964,6 +3046,10 @@ class SQLiteControllerRepository:
                 sandbox_evidence_sha256=row["sandbox_evidence_sha256"],
                 status=JobStatus(row["status"]),
                 created_at=datetime.fromisoformat(row["created_at"]),
+                assigned_agent_id=(
+                    _canonical_stored_uuid_text(row["assigned_agent_id"], "assigned_agent_id")
+                    if row["assigned_agent_id"] is not None else None
+                ),
                 dispatched_at=_parse_datetime(row["dispatched_at"]),
                 completed_at=_parse_datetime(row["completed_at"]),
             )
@@ -2986,6 +3072,8 @@ class SQLiteControllerRepository:
             )
         except ValidationError as error:
             raise StorageConflictError("enforcement job model is invalid") from error
+        if job.status is not JobStatus.PENDING:
+            raise StorageConflictError("only pending enforcement jobs may be created")
         with self._connection() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             for row in connection.execute(
@@ -3015,15 +3103,15 @@ class SQLiteControllerRepository:
                         compatibility_report_id, sandbox_session_id, control_id,
                         job_type, administrator_enforcement_approval_acknowledged,
                         sandbox_evidence_sha256, status, created_at,
-                        dispatched_at, completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        assigned_agent_id, dispatched_at, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(job.enforcement_job_id), str(job.request_id),
                         str(job.target_id), str(job.profile_id),
                         str(job.compatibility_report_id), str(job.sandbox_session_id),
                         job.control_id, job.job_type.value, 1,
                         job.sandbox_evidence_sha256, job.status.value,
-                        job.created_at.isoformat(), None, None,
+                        job.created_at.isoformat(), None, None, None,
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -3035,6 +3123,82 @@ class SQLiteControllerRepository:
             if row is None:
                 raise StorageConflictError("enforcement job disappeared")
             return self._enforcement_job_from_row(connection, row)
+
+    def poll_enforcement_jobs(
+        self,
+        *,
+        target_id: UUID,
+        agent_id: UUID,
+        dispatched_at: datetime,
+        limit: int,
+    ) -> list[EnforcementJobRecord]:
+        """Atomically claim fixed enforcement only for this enrolled Agent."""
+
+        if limit < 0:
+            raise StorageConflictError("enforcement poll limit is invalid")
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM agents WHERE target_id = ? AND agent_id = ?",
+                (str(target_id), str(agent_id)),
+            ).fetchone() is None:
+                raise StorageNotFoundError("target and agent binding does not exist")
+            existing_rows = connection.execute(
+                """SELECT * FROM enforcement_jobs
+                   WHERE target_id = ? AND assigned_agent_id = ?
+                     AND status = 'dispatched'
+                   ORDER BY created_at, enforcement_job_id LIMIT ?""",
+                (str(target_id), str(agent_id), limit),
+            ).fetchall()
+            existing = [
+                self._enforcement_job_from_row(connection, row)
+                for row in existing_rows
+            ]
+            remaining = limit - len(existing)
+            claimed: list[EnforcementJobRecord] = []
+            if remaining > 0:
+                pending_rows = connection.execute(
+                    """SELECT * FROM enforcement_jobs
+                       WHERE target_id = ? AND status = 'pending'
+                       ORDER BY created_at, enforcement_job_id LIMIT ?""",
+                    (str(target_id), remaining),
+                ).fetchall()
+                pending = [
+                    self._enforcement_job_from_row(connection, row)
+                    for row in pending_rows
+                ]
+                if any(
+                    job.target_id != target_id or job.assigned_agent_id is not None
+                    or dispatched_at < job.created_at
+                    for job in pending
+                ):
+                    raise StorageConflictError("pending enforcement job is invalid")
+                for job in pending:
+                    cursor = connection.execute(
+                        """UPDATE enforcement_jobs
+                           SET status = 'dispatched', assigned_agent_id = ?,
+                               dispatched_at = ?
+                           WHERE enforcement_job_id = ? AND target_id = ?
+                             AND status = 'pending' AND assigned_agent_id IS NULL
+                             AND dispatched_at IS NULL""",
+                        (
+                            str(agent_id), dispatched_at.isoformat(),
+                            str(job.enforcement_job_id), str(target_id),
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise StorageConflictError("enforcement claim changed")
+                    row = connection.execute(
+                        "SELECT * FROM enforcement_jobs WHERE enforcement_job_id = ?",
+                        (str(job.enforcement_job_id),),
+                    ).fetchone()
+                    if row is None:
+                        raise StorageNotFoundError("claimed enforcement job is missing")
+                    claimed_job = self._enforcement_job_from_row(connection, row)
+                    if claimed_job.assigned_agent_id != agent_id:
+                        raise StorageConflictError("enforcement Agent binding is invalid")
+                    claimed.append(claimed_job)
+        return [*existing, *claimed]
 
 
     def get_validation_job(

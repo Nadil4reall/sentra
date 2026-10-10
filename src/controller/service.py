@@ -33,6 +33,7 @@ from src.controller.models import (
     CompatibilityAnalysisRequest,
     CompatibilityReportRecord,
     EnforcementJobCreateRequest,
+    EnforcementJobDelivery,
     EnforcementJobRecord,
     EnrollmentRequest,
     EnrollmentResponse,
@@ -74,6 +75,8 @@ from src.controller.validation import (
     compatibility_reference_from_record,
     require_payload_matches_job,
 )
+from src.controller.sandbox_context import derive_sandbox_context
+from src.controller.enforcement import verify_enforcement_delivery
 from src.sandbox_validator.models import ExecutionMode, ValidationDecision
 
 
@@ -337,11 +340,69 @@ class ControllerService:
                 if remaining > 0
                 else []
             )
+            remaining -= len(validation_jobs)
+            enforcement_jobs = (
+                self._repository.poll_enforcement_jobs(
+                    target_id=request.auth.target_id,
+                    agent_id=request.auth.agent_id,
+                    dispatched_at=dispatched_at,
+                    limit=min(remaining, 1),
+                )
+                if remaining > 0 and not validation_jobs else []
+            )
+            deliveries = [
+                self._build_enforcement_delivery(job, request.auth.agent_id)
+                for job in enforcement_jobs
+            ]
         except StorageNotFoundError as error:
             raise AuthenticationError("invalid agent identity or credential") from error
         except StorageConflictError as error:
             raise ControllerConflictError("job dispatch conflicts with controller state") from error
-        return JobPollResponse(jobs=[*profile_jobs, *validation_jobs])
+        return JobPollResponse(jobs=[*profile_jobs, *validation_jobs, *deliveries])
+
+    def _build_enforcement_delivery(
+        self, job: EnforcementJobRecord, agent_id: UUID,
+    ) -> EnforcementJobDelivery:
+        """Hydrate only the approved M6 payload and three M3 metadata facts."""
+
+        try:
+            stored_profile = self._repository.get_stored_profile(job.profile_id)
+            report = self._repository.get_compatibility_report(
+                target_id=job.target_id,
+                profile_id=job.profile_id,
+                compatibility_report_id=job.compatibility_report_id,
+            )
+            evidence = self._repository.get_sandbox_validation_evidence(
+                sandbox_session_id=job.sandbox_session_id,
+            )
+            if stored_profile is None or report is None or evidence is None:
+                raise ValueError("enforcement source evidence is missing")
+            if stored_profile.record.target_id != job.target_id:
+                raise ValueError("enforcement profile target is invalid")
+            reference = compatibility_reference_from_record(report, job.control_id)
+            context = derive_sandbox_context(
+                job.control_id, stored_profile.profile, reference,
+            )
+            payload, evidence_sha256 = evidence
+            if evidence_sha256 != job.sandbox_evidence_sha256:
+                raise ValueError("enforcement evidence hash changed")
+            delivery = EnforcementJobDelivery.model_validate(
+                {
+                    **job.model_dump(mode="python"),
+                    "evidence_sandbox_session_id": job.sandbox_session_id,
+                    "m6_evidence": payload,
+                    "expected_source_state": context.source_state,
+                },
+                strict=True,
+            )
+            verify_enforcement_delivery(
+                delivery, target_id=job.target_id, agent_id=agent_id,
+            )
+            return delivery
+        except (StorageConflictError, ValueError, ValidationError) as error:
+            raise ControllerConflictError(
+                "enforcement delivery evidence is invalid"
+            ) from error
 
     def submit_profile(self, request: ProfileSubmissionRequest) -> ProfileRecord:
         """Validate and store an M3 profile with a controller-computed hash."""

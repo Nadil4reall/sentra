@@ -131,10 +131,20 @@ def test_closed_validated_evidence_creates_pending_controller_job(tmp_path: Path
         request.target_id, request.profile_id, request.compatibility_report_id,
         request.sandbox_session_id,
     )
-    assert case.service.poll_jobs(JobPollRequest(auth=_auth(case.enrollment))).jobs == []
-    with pytest.raises(ValidationError):
-        JobPollResponse.model_validate({"jobs": [job.model_dump(mode="python")]}, strict=True)
-    assert SQLiteControllerRepository(case.database).create_enforcement_job(job) == job
+    delivered = case.service.poll_jobs(
+        JobPollRequest(auth=_auth(case.enrollment))
+    ).jobs
+    assert len(delivered) == 1
+    assert delivered[0].enforcement_job_id == job.enforcement_job_id
+    assert delivered[0].status is JobStatus.DISPATCHED
+    assert JobPollResponse.model_validate(
+        {"jobs": [delivered[0].model_dump(mode="python")]}, strict=True
+    ).jobs == delivered
+    assert (
+        SQLiteControllerRepository(case.database)
+        .create_enforcement_job(job).enforcement_job_id
+        == job.enforcement_job_id
+    )
 
 
 def test_identical_request_replay_is_idempotent_and_changed_replay_conflicts(

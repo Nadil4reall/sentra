@@ -29,6 +29,7 @@ from src.sandbox_validator.models import (
     ExecutionMode,
     ValidationReport,
 )
+from src.sandbox_protocol.models import PasswdSourceState
 from src.target_profiler.models import TargetProfile
 
 
@@ -342,7 +343,7 @@ class EnforcementJobCreateRequest(StrictControllerModel):
 
 
 class EnforcementJobRecord(StrictControllerModel):
-    """Controller-owned M7-A authorization; never an Agent-polled job yet."""
+    """Controller-owned 7.1.1 authorization, pending or Agent-dispatched only."""
 
     enforcement_job_id: UUID
     request_id: UUID
@@ -354,10 +355,23 @@ class EnforcementJobRecord(StrictControllerModel):
     job_type: Literal[JobType.ENFORCE_CONTROL] = JobType.ENFORCE_CONTROL
     administrator_enforcement_approval_acknowledged: Literal[True]
     sandbox_evidence_sha256: Sha256Hex
-    status: Literal[JobStatus.PENDING] = JobStatus.PENDING
+    status: Literal[JobStatus.PENDING, JobStatus.DISPATCHED] = JobStatus.PENDING
     created_at: AwareDatetime
-    dispatched_at: None = None
+    assigned_agent_id: UUID | None = None
+    dispatched_at: AwareDatetime | None = None
     completed_at: None = None
+
+    @model_validator(mode="after")
+    def validate_dispatch(self) -> "EnforcementJobRecord":
+        _validate_job_lifecycle(
+            status=self.status,
+            created_at=self.created_at,
+            dispatched_at=self.dispatched_at,
+            completed_at=None,
+        )
+        if (self.status is JobStatus.PENDING) != (self.assigned_agent_id is None):
+            raise ValueError("enforcement Agent assignment does not match status")
+        return self
 
 
 def _validate_job_lifecycle(
@@ -389,31 +403,6 @@ def _validate_job_lifecycle(
 
 class JobPollRequest(StrictControllerModel):
     auth: AgentAuth
-
-
-AgentJobRecord: TypeAlias = Annotated[
-    JobRecord | ValidationJobRecord,
-    Field(discriminator="job_type"),
-]
-
-
-class JobPollResponse(StrictControllerModel):
-    jobs: list[AgentJobRecord]
-
-    @field_validator("jobs")
-    @classmethod
-    def reject_duplicate_jobs(
-        cls, jobs: list[AgentJobRecord]
-    ) -> list[AgentJobRecord]:
-        job_ids = [
-            job.job_id
-            if isinstance(job, JobRecord)
-            else job.validation_job_id
-            for job in jobs
-        ]
-        if len(job_ids) != len(set(job_ids)):
-            raise ValueError("jobs must have unique Controller job IDs")
-        return jobs
 
 
 class ProfileSubmissionRequest(StrictControllerModel):
@@ -671,6 +660,55 @@ class ValidationResultPayload(StrictControllerModel):
         return self
 
 
+class EnforcementJobDelivery(EnforcementJobRecord):
+    """Strict Controller-derived evidence sent only with a dispatched job."""
+
+    status: Literal[JobStatus.DISPATCHED] = JobStatus.DISPATCHED
+    assigned_agent_id: UUID
+    dispatched_at: AwareDatetime
+    evidence_sandbox_session_id: UUID
+    m6_evidence: ValidationResultPayload
+    expected_source_state: PasswdSourceState
+
+    @model_validator(mode="after")
+    def validate_evidence_lineage(self) -> "EnforcementJobDelivery":
+        evidence = self.m6_evidence
+        if (
+            self.evidence_sandbox_session_id != self.sandbox_session_id
+            or evidence.target_id != self.target_id
+            or evidence.profile_id != self.profile_id
+            or evidence.compatibility_report_id != self.compatibility_report_id
+            or evidence.control_id != self.control_id
+        ):
+            raise ValueError("enforcement evidence lineage does not match job")
+        return self
+
+
+AgentJobRecord: TypeAlias = Annotated[
+    JobRecord | ValidationJobRecord | EnforcementJobDelivery,
+    Field(discriminator="job_type"),
+]
+
+
+class JobPollResponse(StrictControllerModel):
+    jobs: list[AgentJobRecord]
+
+    @field_validator("jobs")
+    @classmethod
+    def reject_duplicate_jobs(
+        cls, jobs: list[AgentJobRecord]
+    ) -> list[AgentJobRecord]:
+        job_ids = [
+            job.job_id if isinstance(job, JobRecord) else
+            job.validation_job_id if isinstance(job, ValidationJobRecord) else
+            job.enforcement_job_id
+            for job in jobs
+        ]
+        if len(job_ids) != len(set(job_ids)):
+            raise ValueError("jobs must have unique Controller job IDs")
+        return jobs
+
+
 class ValidationResultSubmissionRequest(StrictControllerModel):
     auth: AgentAuth
     payload: ValidationResultPayload
@@ -740,6 +778,9 @@ __all__ = [
     "CompatibilityReportRecord",
     "EnrollmentRequest",
     "EnrollmentResponse",
+    "EnforcementJobCreateRequest",
+    "EnforcementJobDelivery",
+    "EnforcementJobRecord",
     "HeartbeatRequest",
     "HeartbeatResponse",
     "JobCreateRequest",

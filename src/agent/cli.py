@@ -21,6 +21,8 @@ from src.agent.state import AgentStateError, AgentStateStore
 from src.agent.transport import AgentHTTPSClient, AgentTransportError
 from src.agent.validation import LocalSandboxControlValidator
 from src.agent.validation_journal import ValidationJournalStore
+from src.agent.enforcement_journal import EnforcementJournalError, EnforcementJournalStore
+from src.agent.enforcement import EnforcementPreflightError
 from src.controller.models import ObservedTargetMetadata
 from src.target_profiler.profiler import inspect_local_target
 
@@ -224,12 +226,17 @@ def main(argv: list[str] | None = None) -> int:
             validation_journal=ValidationJournalStore.for_agent_state(
                 runtime_config.state_path
             ),
+            enforcement_journal=EnforcementJournalStore.for_agent_state(
+                runtime_config.state_path
+            ),
             sandbox_validation_acknowledged=args.sandbox_validation_ack,
         )
         result = runtime.run_once()
     except (
         AgentCredentialSourceError,
         AgentRuntimeError,
+        EnforcementJournalError,
+        EnforcementPreflightError,
         AgentStateError,
         AgentTransportError,
         ValidationError,

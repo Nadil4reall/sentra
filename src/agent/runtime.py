@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Protocol
 from uuid import UUID
 
 from pydantic import SecretStr
 
 from src.agent.profiler import TargetProfilerAdapter
+from src.agent import enforcement as enforcement_preflight
+from src.agent.enforcement_journal import (
+    EnforcementJournalStore,
+    EnforcementPreflightOutcome,
+)
 from src.agent.protocol import AgentProtocol
 from src.agent.validation import ControlValidationAdapter
 from src.agent.validation_journal import (
@@ -20,6 +25,7 @@ from src.agent.validation_journal import (
 from src.controller.models import (
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementJobDelivery,
     HeartbeatRequest,
     HeartbeatResponse,
     JobPollRequest,
@@ -65,27 +71,32 @@ class AgentRunResult:
     heartbeat_accepted: bool
     jobs_polled: int
     profiles_submitted: int
+    validation_count: InitVar[int | None] = None
+
+    def __post_init__(self, validation_count: int | None) -> None:
+        object.__setattr__(
+            self, "_validation_count",
+            self.jobs_polled - self.profiles_submitted
+            if validation_count is None else validation_count,
+        )
 
     @property
     def validation_results_submitted(self) -> int:
         """Count completed validation submissions without changing M6B output.
 
-        A successful cycle preflights every polled job as exactly one of the
-        closed ``PROFILE_TARGET`` or ``VALIDATE_CONTROL`` variants and returns
-        only after each has been submitted.  The difference is therefore the
-        validation-result count.  Keeping this as a derived property preserves
-        the established credential-free CLI JSON shape from M6B.
+        An internal count keeps M7-B preflights out of this M6D metric while
+        preserving the established credential-free CLI JSON shape from M6B.
         """
 
-        return self.jobs_polled - self.profiles_submitted
+        return self._validation_count
 
 
 class AgentRuntime:
     """Enroll if necessary, heartbeat, poll, profile locally, and submit.
 
-    This class deliberately exposes no generic executor.  ``PROFILE_TARGET``
-    maps to the injected read-only M3 adapter; ``VALIDATE_CONTROL`` maps to the
-    separately injected, allowlisted M5 adapter and its crash-safe journal.
+    This class deliberately exposes no generic executor. ``PROFILE_TARGET``
+    maps to read-only M3, ``VALIDATE_CONTROL`` retains its gated M5 path, and
+    M7-B ``ENFORCE_CONTROL`` stops after read-only preflight/journaling.
     """
 
     def __init__(
@@ -99,6 +110,7 @@ class AgentRuntime:
         sentra_version: str | None = None,
         control_validator: ControlValidationAdapter | None = None,
         validation_journal: ValidationJournalStore | None = None,
+        enforcement_journal: EnforcementJournalStore | None = None,
         sandbox_validation_acknowledged: bool = False,
     ) -> None:
         self._protocol = protocol
@@ -109,17 +121,20 @@ class AgentRuntime:
         self._sentra_version = sentra_version
         self._control_validator = control_validator
         self._validation_journal = validation_journal
+        self._enforcement_journal = enforcement_journal
         self._sandbox_validation_acknowledged = (
             sandbox_validation_acknowledged
         )
 
     @staticmethod
     def _preflight_jobs(
-        jobs: list[JobRecord | ValidationJobRecord],
+        jobs: list[JobRecord | ValidationJobRecord | EnforcementJobDelivery],
         *,
         target_id: UUID,
+        agent_id: UUID,
     ) -> None:
         validation_jobs = 0
+        enforcement_jobs = 0
         for job in jobs:
             if job.target_id != target_id:
                 raise AgentRuntimeError(
@@ -140,6 +155,14 @@ class AgentRuntime:
                         "Controller returned an unsupported Agent job"
                     )
                 validation_jobs += 1
+            elif isinstance(job, EnforcementJobDelivery):
+                try:
+                    enforcement_preflight.verify_enforcement_delivery(
+                        job, target_id=target_id, agent_id=agent_id,
+                    )
+                except (ValueError, TypeError):
+                    raise AgentRuntimeError("enforcement delivery is invalid") from None
+                enforcement_jobs += 1
             else:  # defensive boundary around injected transports
                 raise AgentRuntimeError(
                     "Controller returned an unsupported Agent job"
@@ -147,6 +170,10 @@ class AgentRuntime:
         if validation_jobs > 1:
             raise AgentRuntimeError(
                 "Controller returned more than one validation job in one cycle"
+            )
+        if enforcement_jobs > 1 or (enforcement_jobs and validation_jobs):
+            raise AgentRuntimeError(
+                "Controller returned incompatible or multiple mutation-capable jobs"
             )
 
     def run_once(self) -> AgentRunResult:
@@ -175,9 +202,12 @@ class AgentRuntime:
         state = self._protocol.state
         if state.target_id is None or state.agent_id is None:
             raise AgentRuntimeError("Agent identity is incomplete after enrollment")
-        self._preflight_jobs(polled.jobs, target_id=state.target_id)
+        self._preflight_jobs(
+            polled.jobs, target_id=state.target_id, agent_id=state.agent_id,
+        )
 
         profiles_submitted = 0
+        validation_results_submitted = 0
         for job in polled.jobs:
             if isinstance(job, JobRecord):
                 profile = self._profiler.collect()
@@ -199,6 +229,22 @@ class AgentRuntime:
                     )
                 profiles_submitted += 1
                 continue
+
+            if isinstance(job, EnforcementJobDelivery):
+                journal = self._enforcement_journal
+                if journal is None:
+                    raise AgentRuntimeError(
+                        "enforcement preflight journal is not configured"
+                    )
+                observed, outcome = enforcement_preflight.verify_and_observe(
+                    job, target_id=state.target_id, agent_id=state.agent_id,
+                )
+                journal.record(
+                    job, target_id=state.target_id, agent_id=state.agent_id,
+                    observed=observed,
+                    outcome=EnforcementPreflightOutcome(outcome),
+                )
+                continue  # M7-B terminates here; no M5 or target apply path.
 
             validator = self._control_validator
             journal = self._validation_journal
@@ -257,12 +303,14 @@ class AgentRuntime:
                         "Controller returned inconsistent validation lineage"
                 )
                 locked.mark_acknowledged(stored)
+                validation_results_submitted += 1
 
         return AgentRunResult(
             enrolled_during_run=enrolled_during_run,
             heartbeat_accepted=True,
             jobs_polled=len(polled.jobs),
             profiles_submitted=profiles_submitted,
+            validation_count=validation_results_submitted,
         )
 
 
