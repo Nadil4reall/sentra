@@ -32,6 +32,8 @@ from src.controller.models import (
     AgentAuth,
     CompatibilityAnalysisRequest,
     CompatibilityReportRecord,
+    EnforcementJobCreateRequest,
+    EnforcementJobRecord,
     EnrollmentRequest,
     EnrollmentResponse,
     HeartbeatRequest,
@@ -72,6 +74,7 @@ from src.controller.validation import (
     compatibility_reference_from_record,
     require_payload_matches_job,
 )
+from src.sandbox_validator.models import ExecutionMode, ValidationDecision
 
 
 CURRENT_BENCHMARK_IDENTITY = (
@@ -940,6 +943,95 @@ class ControllerService:
             raise ControllerConflictError(
                 "validation job conflicts with Controller state"
             ) from error
+
+    def create_enforcement_job(
+        self,
+        auth: AdminAuth,
+        request: EnforcementJobCreateRequest,
+    ) -> EnforcementJobRecord:
+        """Create only a pending 7.1.1 job from closed, validated M6 evidence."""
+
+        self._authenticate_admin(auth)
+        if type(request) is not EnforcementJobCreateRequest:
+            raise ControllerConflictError("enforcement request is not strict")
+        try:
+            request = EnforcementJobCreateRequest.model_validate(
+                request.model_dump(mode="python"), strict=True
+            )
+        except ValidationError as error:
+            raise ControllerConflictError("enforcement approval is invalid") from error
+        try:
+            target = self._repository.get_target(request.target_id)
+        except StorageConflictError as error:
+            raise ControllerConflictError("stored target is invalid") from error
+        if target is None:
+            raise ControllerNotFoundError("target does not exist")
+        report = self._require_compatibility_lineage(
+            target_id=request.target_id,
+            profile_id=request.profile_id,
+            compatibility_report_id=request.compatibility_report_id,
+        )
+        try:
+            reference = compatibility_reference_from_record(report, request.control_id)
+            session = self._repository.get_sandbox_session(
+                target_id=request.target_id,
+                profile_id=request.profile_id,
+                compatibility_report_id=request.compatibility_report_id,
+                sandbox_session_id=request.sandbox_session_id,
+            )
+        except (StorageConflictError, ValueError) as error:
+            raise ControllerConflictError("sandbox evidence is invalid") from error
+        if session is None:
+            raise ControllerNotFoundError("sandbox session does not exist")
+        if (
+            session.status is not SandboxSessionStatus.CLOSED
+            or session.failure_reason is not None
+            or session.quarantine_reason is not None
+        ):
+            raise ControllerConflictError("sandbox session is not successfully closed")
+        try:
+            evidence = self._repository.get_sandbox_validation_evidence(
+                sandbox_session_id=request.sandbox_session_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError("sandbox evidence is invalid") from error
+        if evidence is None:
+            raise ControllerConflictError("completed sandbox evidence does not exist")
+        payload, evidence_sha256 = evidence
+        if (
+            session.compatibility_reference != reference
+            or payload.target_id != request.target_id
+            or payload.profile_id != request.profile_id
+            or payload.compatibility_report_id != request.compatibility_report_id
+            or payload.control_id != request.control_id
+            or payload.execution_mode is not ExecutionMode.EXECUTE
+            or payload.report.mode is not ExecutionMode.EXECUTE
+            or len(payload.report.control_results) != 1
+            or payload.report.control_results[0].control_id != "7.1.1"
+            or payload.report.control_results[0].result is not ValidationDecision.VALIDATED
+        ):
+            raise ControllerConflictError("sandbox evidence does not authorize enforcement")
+        created_at = self._now()
+        if session.closed_at is None or created_at < session.closed_at:
+            raise ControllerConflictError("enforcement timeline is invalid")
+        job = EnforcementJobRecord(
+            enforcement_job_id=self._new_id(),
+            request_id=request.request_id,
+            target_id=request.target_id,
+            profile_id=request.profile_id,
+            compatibility_report_id=request.compatibility_report_id,
+            sandbox_session_id=request.sandbox_session_id,
+            control_id="7.1.1",
+            administrator_enforcement_approval_acknowledged=True,
+            sandbox_evidence_sha256=evidence_sha256,
+            created_at=created_at,
+        )
+        try:
+            return self._repository.create_enforcement_job(job)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("enforcement lineage does not exist") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError("enforcement job conflicts with Controller state") from error
 
     def create_and_dispatch_sandbox_validation_job(
         self,

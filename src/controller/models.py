@@ -102,6 +102,7 @@ class JobType(StrEnum):
 
     PROFILE_TARGET = "PROFILE_TARGET"
     VALIDATE_CONTROL = "VALIDATE_CONTROL"
+    ENFORCE_CONTROL = "ENFORCE_CONTROL"
 
 
 class JobStatus(StrEnum):
@@ -326,6 +327,37 @@ class ValidationJobRecord(StrictControllerModel):
                 "insufficient evidence requires a recorded override reason"
             )
         return self
+
+
+class EnforcementJobCreateRequest(StrictControllerModel):
+    """New administrator approval to consider only fixed 7.1.1 target enforcement."""
+
+    request_id: UUID
+    target_id: UUID
+    profile_id: UUID
+    compatibility_report_id: UUID
+    sandbox_session_id: UUID
+    control_id: Literal["7.1.1"]
+    administrator_enforcement_approval_acknowledged: Literal[True]
+
+
+class EnforcementJobRecord(StrictControllerModel):
+    """Controller-owned M7-A authorization; never an Agent-polled job yet."""
+
+    enforcement_job_id: UUID
+    request_id: UUID
+    target_id: UUID
+    profile_id: UUID
+    compatibility_report_id: UUID
+    sandbox_session_id: UUID
+    control_id: Literal["7.1.1"]
+    job_type: Literal[JobType.ENFORCE_CONTROL] = JobType.ENFORCE_CONTROL
+    administrator_enforcement_approval_acknowledged: Literal[True]
+    sandbox_evidence_sha256: Sha256Hex
+    status: Literal[JobStatus.PENDING] = JobStatus.PENDING
+    created_at: AwareDatetime
+    dispatched_at: None = None
+    completed_at: None = None
 
 
 def _validate_job_lifecycle(

@@ -90,10 +90,11 @@ def test_unknown_or_command_like_job_types_are_rejected(job_type: str) -> None:
         JobCreateRequest(target_id=uuid4(), job_type=job_type)
 
 
-def test_only_narrow_profile_and_validation_job_types_are_available() -> None:
+def test_only_narrow_job_types_are_available_and_agent_creation_stays_profile_only() -> None:
     assert list(JobType) == [
         JobType.PROFILE_TARGET,
         JobType.VALIDATE_CONTROL,
+        JobType.ENFORCE_CONTROL,
     ]
     request = JobCreateRequest(
         target_id=uuid4(),
@@ -104,6 +105,11 @@ def test_only_narrow_profile_and_validation_job_types_are_available() -> None:
         JobCreateRequest(
             target_id=uuid4(),
             job_type=JobType.VALIDATE_CONTROL,
+        )
+    with pytest.raises(ValidationError):
+        JobCreateRequest(
+            target_id=uuid4(),
+            job_type=JobType.ENFORCE_CONTROL,
         )
 
 
