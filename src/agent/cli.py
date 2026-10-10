@@ -23,6 +23,7 @@ from src.agent.validation import LocalSandboxControlValidator
 from src.agent.validation_journal import ValidationJournalStore
 from src.agent.enforcement_journal import EnforcementJournalError, EnforcementJournalStore
 from src.agent.enforcement import EnforcementPreflightError
+from src.agent.enforcement_execute import EnforcementExecutionError
 from src.controller.models import ObservedTargetMetadata
 from src.target_profiler.profiler import inspect_local_target
 
@@ -95,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
             "locally acknowledge that this host is the dedicated M5 sandbox "
             "for this Agent cycle; this is separate from Controller administrator "
             "approval and does not select a control or action"
+        ),
+    )
+    parser.add_argument(
+        "--retry-interrupted-enforcement",
+        action="store_true",
+        help=(
+            "explicitly retry a fixed 7.1.1 enforcement journal left EXECUTING "
+            "only when current metadata still equals its approved original state"
         ),
     )
     return parser
@@ -230,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_config.state_path
             ),
             sandbox_validation_acknowledged=args.sandbox_validation_ack,
+            retry_interrupted_enforcement=args.retry_interrupted_enforcement,
         )
         result = runtime.run_once()
     except (
@@ -237,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         AgentRuntimeError,
         EnforcementJournalError,
         EnforcementPreflightError,
+        EnforcementExecutionError,
         AgentStateError,
         AgentTransportError,
         ValidationError,

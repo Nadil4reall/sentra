@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from src.agent.profiler import TargetProfilerAdapter
 from src.agent import enforcement as enforcement_preflight
+from src.agent import enforcement_execute
 from src.agent.enforcement_journal import (
     EnforcementJournalStore,
     EnforcementPreflightOutcome,
@@ -96,7 +97,7 @@ class AgentRuntime:
 
     This class deliberately exposes no generic executor. ``PROFILE_TARGET``
     maps to read-only M3, ``VALIDATE_CONTROL`` retains its gated M5 path, and
-    M7-B ``ENFORCE_CONTROL`` stops after read-only preflight/journaling.
+    M7 ``ENFORCE_CONTROL`` has a separate journal-gated fixed metadata boundary.
     """
 
     def __init__(
@@ -112,6 +113,7 @@ class AgentRuntime:
         validation_journal: ValidationJournalStore | None = None,
         enforcement_journal: EnforcementJournalStore | None = None,
         sandbox_validation_acknowledged: bool = False,
+        retry_interrupted_enforcement: bool = False,
     ) -> None:
         self._protocol = protocol
         self._transport = transport
@@ -125,6 +127,7 @@ class AgentRuntime:
         self._sandbox_validation_acknowledged = (
             sandbox_validation_acknowledged
         )
+        self._retry_interrupted_enforcement = retry_interrupted_enforcement
 
     @staticmethod
     def _preflight_jobs(
@@ -234,17 +237,23 @@ class AgentRuntime:
                 journal = self._enforcement_journal
                 if journal is None:
                     raise AgentRuntimeError(
-                        "enforcement preflight journal is not configured"
+                        "enforcement journal is not configured"
                     )
-                observed, outcome = enforcement_preflight.verify_and_observe(
+                with journal.acquire(
                     job, target_id=state.target_id, agent_id=state.agent_id,
-                )
-                journal.record(
-                    job, target_id=state.target_id, agent_id=state.agent_id,
-                    observed=observed,
-                    outcome=EnforcementPreflightOutcome(outcome),
-                )
-                continue  # M7-B terminates here; no M5 or target apply path.
+                ) as locked:
+                    if locked.entry is None:
+                        observed, outcome = enforcement_preflight.verify_and_observe(
+                            job, target_id=state.target_id, agent_id=state.agent_id,
+                        )
+                        locked.prepare(
+                            observed, EnforcementPreflightOutcome(outcome),
+                        )
+                    enforcement_execute.execute_prepared_enforcement(
+                        job, locked,
+                        retry_interrupted=self._retry_interrupted_enforcement,
+                    )
+                continue  # M7-C stops locally; no Controller completion.
 
             validator = self._control_validator
             journal = self._validation_journal

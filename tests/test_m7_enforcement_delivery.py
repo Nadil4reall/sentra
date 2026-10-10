@@ -137,6 +137,12 @@ def test_agent_preflight_journals_exact_state_without_mutation(
 ) -> None:
     case, delivery = _delivery(tmp_path)
     monkeypatch.setattr(preflight, "collect_local_passwd_source_state", lambda: observed)
+    # Keep this M7-B preflight test at its read-only boundary; M7-C execution
+    # is exercised separately with an injected metadata-only filesystem.
+    monkeypatch.setattr(
+        "src.agent.runtime.enforcement_execute.execute_prepared_enforcement",
+        lambda *_args, **_kwargs: None,
+    )
     state_path = tmp_path / "agent-state.json"
     protocol = _protocol(state_path)
     protocol.accept_enrollment(case.enrollment)

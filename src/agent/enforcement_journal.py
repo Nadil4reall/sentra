@@ -1,4 +1,4 @@
-"""Private, atomic journal for read-only M7-B enforcement preflight."""
+"""Private, atomic journal for one fixed M7 enforcement transaction."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import stat
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -22,7 +24,7 @@ from src.controller.models import EnforcementJobDelivery
 from src.sandbox_protocol.models import PasswdSourceState
 
 
-_MAX_ENTRY_BYTES = 4096
+_MAX_ENTRY_BYTES = 8192
 
 
 class EnforcementJournalError(RuntimeError):
@@ -33,6 +35,11 @@ class EnforcementPreflightOutcome(StrEnum):
     PREPARED = "PREPARED"
     BLOCKED_DRIFT = "BLOCKED_DRIFT"
     REJECTED = "REJECTED"
+    EXECUTING = "EXECUTING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+    ROLLBACK_FAILED = "ROLLBACK_FAILED"
 
 
 class EnforcementJournalEntry(BaseModel):
@@ -49,17 +56,66 @@ class EnforcementJournalEntry(BaseModel):
     observed_source_state: PasswdSourceState
     outcome: EnforcementPreflightOutcome
     recorded_at: AwareDatetime
+    updated_at: AwareDatetime | None = None
+    pre_execution_observed_state: PasswdSourceState | None = None
+    original_rollback_state: PasswdSourceState | None = None
+    post_execution_observed_state: PasswdSourceState | None = None
+    rollback_observed_state: PasswdSourceState | None = None
+    mutation_attempted: bool = False
+    mutation_changed: bool = False
+    verification_succeeded: bool | None = None
+    rollback_attempted: bool = False
+    rollback_succeeded: bool | None = None
+    execution_started_at: AwareDatetime | None = None
+    execution_finished_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "EnforcementJournalEntry":
-        if (
-            self.outcome is EnforcementPreflightOutcome.PREPARED
-            and self.observed_source_state != self.expected_source_state
-        ) or (
-            self.outcome is EnforcementPreflightOutcome.BLOCKED_DRIFT
-            and self.observed_source_state == self.expected_source_state
+        if self.outcome is EnforcementPreflightOutcome.PREPARED and (
+            self.observed_source_state != self.expected_source_state
+            or self.mutation_attempted
+            or self.original_rollback_state is not None
         ):
             raise ValueError("enforcement journal outcome contradicts observed state")
+        if self.outcome is EnforcementPreflightOutcome.BLOCKED_DRIFT and (
+            (self.pre_execution_observed_state or self.observed_source_state)
+            == self.expected_source_state
+            or self.mutation_changed
+        ):
+            raise ValueError("enforcement drift journal is inconsistent")
+        if self.outcome is EnforcementPreflightOutcome.EXECUTING and (
+            self.original_rollback_state != self.expected_source_state
+            or self.pre_execution_observed_state != self.expected_source_state
+            or not self.mutation_attempted
+            or self.execution_started_at is None
+        ):
+            raise ValueError("executing journal lacks original metadata")
+        if self.outcome is EnforcementPreflightOutcome.SUCCEEDED and (
+            self.original_rollback_state != self.expected_source_state
+            or self.post_execution_observed_state is None
+            or self.verification_succeeded is not True
+            or self.execution_finished_at is None
+        ):
+            raise ValueError("success journal lacks verified metadata")
+        if self.outcome is EnforcementPreflightOutcome.FAILED and (
+            self.mutation_attempted
+            or self.verification_succeeded is not False
+            or self.execution_finished_at is None
+        ):
+            raise ValueError("pre-mutation failure journal is inconsistent")
+        if self.outcome in {
+            EnforcementPreflightOutcome.ROLLED_BACK,
+            EnforcementPreflightOutcome.ROLLBACK_FAILED,
+        } and (
+            not self.mutation_attempted
+            or not self.rollback_attempted
+            or self.rollback_succeeded is not (
+                self.outcome is EnforcementPreflightOutcome.ROLLED_BACK
+            )
+            or self.original_rollback_state is None
+            or self.execution_finished_at is None
+        ):
+            raise ValueError("rollback journal is inconsistent")
         return self
 
 
@@ -194,6 +250,41 @@ class EnforcementJournalStore:
                 pass
             os.close(directory_fd)
 
+    @contextmanager
+    def acquire(
+        self, delivery: EnforcementJobDelivery, *, target_id: UUID, agent_id: UUID,
+    ) -> Iterator["LockedEnforcementJournal"]:
+        try:
+            verify_enforcement_delivery(
+                delivery, target_id=target_id, agent_id=agent_id,
+            )
+        except (ValueError, TypeError):
+            raise EnforcementJournalError("enforcement delivery is invalid") from None
+        self._ensure_directory()
+        lock_path = self.directory / f"{delivery.enforcement_job_id}.lock"
+        lock_fd = os.open(
+            lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600,
+        )
+        try:
+            self._private_file(os.fstat(lock_fd))
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            existing = self._load(delivery.enforcement_job_id)
+            if existing is not None and (
+                existing.enforcement_job_id != delivery.enforcement_job_id
+                or existing.target_id != target_id
+                or existing.agent_id != agent_id
+                or existing.control_id != delivery.control_id
+                or existing.m6_evidence_sha256 != delivery.sandbox_evidence_sha256
+                or existing.delivery_sha256 != _delivery_sha256(delivery)
+                or existing.expected_source_state != delivery.expected_source_state
+            ):
+                raise EnforcementJournalError("enforcement delivery conflicts with journal")
+            yield LockedEnforcementJournal(self, delivery, target_id, agent_id, existing)
+        except BlockingIOError:
+            raise EnforcementJournalError("enforcement job is already active") from None
+        finally:
+            os.close(lock_fd)
+
     def record(
         self,
         delivery: EnforcementJobDelivery,
@@ -221,50 +312,98 @@ class EnforcementJournalStore:
         )
         if outcome is not expected_outcome:
             raise EnforcementJournalError("enforcement drift outcome is inconsistent")
-        self._ensure_directory()
-        lock_path = self.directory / f"{delivery.enforcement_job_id}.lock"
-        lock_fd = os.open(
-            lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600,
+        with self.acquire(delivery, target_id=target_id, agent_id=agent_id) as locked:
+            return locked.prepare(observed, outcome)
+
+
+class LockedEnforcementJournal:
+    """Holds the per-job lock across drift recheck, mutation, and final write."""
+
+    def __init__(
+        self, store: EnforcementJournalStore, delivery: EnforcementJobDelivery,
+        target_id: UUID, agent_id: UUID, entry: EnforcementJournalEntry | None,
+    ) -> None:
+        self._store = store
+        self._delivery = delivery
+        self._target_id = target_id
+        self._agent_id = agent_id
+        self.entry = entry
+
+    def prepare(
+        self, observed: PasswdSourceState, outcome: EnforcementPreflightOutcome,
+    ) -> EnforcementJournalEntry:
+        expected_outcome = (
+            EnforcementPreflightOutcome.PREPARED
+            if observed == self._delivery.expected_source_state
+            else EnforcementPreflightOutcome.BLOCKED_DRIFT
         )
+        if outcome is not expected_outcome:
+            raise EnforcementJournalError("enforcement drift outcome is inconsistent")
+        if self.entry is not None:
+            if self.entry.observed_source_state != observed or self.entry.outcome is not outcome:
+                raise EnforcementJournalError("enforcement delivery conflicts with journal")
+            return self.entry
+        entry = EnforcementJournalEntry(
+            enforcement_job_id=self._delivery.enforcement_job_id,
+            target_id=self._target_id, agent_id=self._agent_id,
+            control_id="7.1.1",
+            m6_evidence_sha256=self._delivery.sandbox_evidence_sha256,
+            delivery_sha256=_delivery_sha256(self._delivery),
+            expected_source_state=self._delivery.expected_source_state,
+            observed_source_state=observed,
+            outcome=outcome,
+            recorded_at=datetime.now(UTC),
+        )
+        self._store._write(entry)
+        self.entry = entry
+        return entry
+
+    def transition(
+        self, outcome: EnforcementPreflightOutcome, **changes: object,
+    ) -> EnforcementJournalEntry:
+        entry = self.entry
+        if entry is None:
+            raise EnforcementJournalError("enforcement journal is not prepared")
+        allowed = {
+            EnforcementPreflightOutcome.PREPARED: {
+                EnforcementPreflightOutcome.BLOCKED_DRIFT,
+                EnforcementPreflightOutcome.EXECUTING,
+                EnforcementPreflightOutcome.SUCCEEDED,
+                EnforcementPreflightOutcome.FAILED,
+            },
+            EnforcementPreflightOutcome.EXECUTING: {
+                EnforcementPreflightOutcome.BLOCKED_DRIFT,
+                EnforcementPreflightOutcome.EXECUTING,
+                EnforcementPreflightOutcome.SUCCEEDED,
+                EnforcementPreflightOutcome.ROLLED_BACK,
+                EnforcementPreflightOutcome.ROLLBACK_FAILED,
+            },
+        }
+        if outcome not in allowed.get(entry.outcome, set()):
+            raise EnforcementJournalError("enforcement journal transition is invalid")
+        mutable_fields = {
+            "pre_execution_observed_state", "original_rollback_state",
+            "post_execution_observed_state", "rollback_observed_state",
+            "mutation_attempted", "mutation_changed", "verification_succeeded",
+            "rollback_attempted", "rollback_succeeded",
+            "execution_started_at", "execution_finished_at",
+        }
+        if not changes.keys() <= mutable_fields:
+            raise EnforcementJournalError("enforcement journal lineage cannot change")
+        values = entry.model_dump(mode="python")
+        values.update(changes)
+        values["outcome"] = outcome
+        values["updated_at"] = datetime.now(UTC)
         try:
-            self._private_file(os.fstat(lock_fd))
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            existing = self._load(delivery.enforcement_job_id)
-            digest = _delivery_sha256(delivery)
-            if existing is not None:
-                if (
-                    existing.enforcement_job_id != delivery.enforcement_job_id
-                    or existing.target_id != target_id
-                    or existing.agent_id != agent_id
-                    or existing.control_id != delivery.control_id
-                    or existing.m6_evidence_sha256 != delivery.sandbox_evidence_sha256
-                    or existing.delivery_sha256 != digest
-                    or existing.expected_source_state != delivery.expected_source_state
-                    or existing.observed_source_state != observed
-                    or existing.outcome is not outcome
-                ):
-                    raise EnforcementJournalError("enforcement delivery conflicts with journal")
-                return existing
-            entry = EnforcementJournalEntry(
-                enforcement_job_id=delivery.enforcement_job_id,
-                target_id=target_id, agent_id=agent_id,
-                control_id="7.1.1",
-                m6_evidence_sha256=delivery.sandbox_evidence_sha256,
-                delivery_sha256=digest,
-                expected_source_state=delivery.expected_source_state,
-                observed_source_state=observed,
-                outcome=outcome,
-                recorded_at=datetime.now(UTC),
-            )
-            self._write(entry)
-            return entry
-        except BlockingIOError:
-            raise EnforcementJournalError("enforcement job is already active") from None
-        finally:
-            os.close(lock_fd)
+            updated = EnforcementJournalEntry.model_validate(values, strict=True)
+        except ValidationError:
+            raise EnforcementJournalError("enforcement journal transition is malformed") from None
+        self._store._write(updated)
+        self.entry = updated
+        return updated
 
 
 __all__ = [
     "EnforcementJournalEntry", "EnforcementJournalError",
-    "EnforcementJournalStore", "EnforcementPreflightOutcome",
+    "EnforcementJournalStore", "EnforcementPreflightOutcome", "LockedEnforcementJournal",
 ]
