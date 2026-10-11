@@ -1,9 +1,16 @@
 {% extends "base.html" %}
+{% from "_ui.html" import badge, empty_state %}
 {% block content %}
-<div class="page-heading"><div><div class="eyebrow">Managed Linux hosts</div><h1>Targets</h1><p>Enrollment and latest observations. Profiles remain historical snapshots.</p></div></div>
-<section class="panel">
-{% if targets %}<div class="table-wrap"><table><thead><tr><th>Target</th><th>Host</th><th>OS / architecture</th><th>Agent</th><th>State</th><th>Last contact</th><th>Latest profile</th><th>Fresh verification</th></tr></thead><tbody>
-{% for item in targets %}<tr><td><a href="{{ url_for('target_detail', target_id=item.target_id) }}">{{ item.target_id }}</a></td><td>{{ item.hostname or 'Not observed' }}</td><td>{{ item.os or '—' }} {{ item.os_version or '' }} · {{ item.architecture or '—' }}</td><td>{{ item.agent_version }}</td><td><span class="badge">{{ item.status }}</span></td><td>{{ item.last_seen or 'Not yet seen' }}</td><td>{{ item.latest_profile_id or '—' }}</td><td>{{ item.latest_verification or 'Not recorded' }}</td></tr>{% endfor %}
-</tbody></table></div>{% else %}<p class="empty">No targets are enrolled. This interface does not create demonstration records.</p>{% endif %}
+<div class="page-heading"><div><div class="eyebrow">Managed Linux hosts</div><h1>Targets<span class="heading-period">.</span></h1><p>One identity per enrolled host. M3 profiles remain historical evidence snapshots, never overwritten by the latest observation.</p></div><span class="page-count">{{ targets|length }} shown</span></div>
+{% if targets %}
+<section class="target-list" aria-label="Enrolled targets">
+  {% for item in targets %}
+  <article class="target-card">
+    <div class="target-card-main"><div class="target-avatar" aria-hidden="true">{{ (item.hostname or 'T')[:1]|upper }}</div><div><div class="target-card-title"><h2><a href="{{ url_for('target_detail', target_id=item.target_id) }}">{{ item.hostname or 'Unnamed target' }}</a></h2>{{ badge(item.status) }}</div><p>{{ item.os or 'OS not observed' }} {{ item.os_version or '' }} <span aria-hidden="true">·</span> {{ item.architecture or 'Architecture unknown' }}</p><code>{{ item.target_id }}</code></div></div>
+    <dl class="target-card-facts"><div><dt>Agent</dt><dd>{{ item.agent_version or 'Version not recorded' }}</dd></div><div><dt>Last contact</dt><dd>{{ item.last_seen or 'Not yet seen' }}</dd></div><div><dt>Latest M3 profile</dt><dd>{{ item.latest_profile_at or 'Not recorded' }}{% if item.latest_profile_id %}<small>{{ item.latest_profile_id }}</small>{% endif %}</dd></div><div><dt>Fresh verification</dt><dd>{{ badge(item.latest_verification) }}</dd></div></dl>
+    <a class="target-card-arrow" href="{{ url_for('target_detail', target_id=item.target_id) }}" aria-label="View {{ item.hostname or item.target_id }} details">↗</a>
+  </article>
+  {% endfor %}
 </section>
+{% else %}<section class="panel">{{ empty_state('No targets are enrolled. This interface does not create demonstration records.') }}</section>{% endif %}
 {% endblock %}

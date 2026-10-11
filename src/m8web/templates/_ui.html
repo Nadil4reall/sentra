@@ -1,0 +1,40 @@
+{% macro badge(value, fallback='Not recorded') -%}
+<span class="status-pill" data-state="{{ value or 'unrecorded' }}">{{ (value|replace('_', ' ')|title) if value else fallback }}</span>
+{%- endmacro %}
+
+{% macro empty_state(message) -%}
+<div class="empty-state"><span class="empty-state-mark" aria-hidden="true">—</span><p>{{ message }}</p></div>
+{%- endmacro %}
+
+{% macro workflow(stages) -%}
+<ol class="workflow-steps" aria-label="SENTRA workflow stages">
+  {% for stage in stages %}
+  <li class="workflow-step" data-state="{{ stage.state or 'unrecorded' }}">
+    <div class="step-top"><span class="step-number">{{ '%02d'|format(loop.index) }}</span><span class="step-rule" aria-hidden="true"></span></div>
+    <span class="step-title">{{ stage.title }}</span>
+    {{ badge(stage.state, 'Not recorded') }}
+    {% if stage.at %}<time class="step-time" datetime="{{ stage.at }}">{{ stage.at }}</time>{% else %}<span class="step-time">No stage evidence yet</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+
+{% macro timeline(events, compact=false) -%}
+{% if events %}
+<ol class="timeline{% if compact %} timeline-compact{% endif %}">
+  {% for event in events %}
+  <li class="timeline-item" data-state="{{ event.outcome or 'unrecorded' }}">
+    <span class="timeline-dot" aria-hidden="true"></span>
+    <div class="timeline-card">
+      <div class="timeline-top"><span class="timeline-title">{{ event.event_type|replace('_', ' ')|title }}</span>{{ badge(event.outcome) }}</div>
+      <div class="timeline-meta"><time datetime="{{ event.occurred_at }}">{{ event.occurred_at }}</time><span aria-hidden="true">·</span><span>{% if event.actor_name %}{{ event.actor_name }}{% elif event.actor_type == 'agent' %}Agent{% else %}System/Controller{% endif %}</span><span aria-hidden="true">·</span><span>{{ event.source }}</span></div>
+      {% if not compact %}
+      <div class="timeline-detail"><span>{{ event.related_type|replace('_', ' ')|title }} <code>{{ event.related_id }}</code></span>{% if event.target_id %}<span>Target <code>{{ event.target_id }}</code></span>{% endif %}{% if event.control_id %}<span>Control {{ event.control_id }}</span>{% endif %}</div>
+      {% if event.reason %}<p class="timeline-reason">{{ event.reason }}</p>{% endif %}
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+{%- endmacro %}

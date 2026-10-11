@@ -6,6 +6,7 @@ they never expose agent credentials or raw profile/evidence payloads.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
@@ -14,6 +15,11 @@ from .status import _open_read_only
 
 def _rows(connection: sqlite3.Connection, sql: str, parameters: tuple = ()) -> list[dict]:
     return [dict(row) for row in connection.execute(sql, parameters).fetchall()]
+
+
+def _first(connection: sqlite3.Connection, sql: str, parameters: tuple = ()) -> dict | None:
+    row = connection.execute(sql, parameters).fetchone()
+    return dict(row) if row is not None else None
 
 
 class M8ReadModel:
@@ -26,11 +32,15 @@ class M8ReadModel:
                 "targets": "SELECT COUNT(*) FROM targets",
                 "profiles": "SELECT COUNT(*) FROM profiles",
                 "assessments": "SELECT COUNT(*) FROM m8_assessments",
+                "compatibility_reports": "SELECT COUNT(*) FROM compatibility_reports",
                 "m4_review_decisions": "SELECT COUNT(*) FROM compatibility_reports r, "
                     "json_each(r.payload_json, '$.control_results') c "
                     "WHERE json_extract(c.value, '$.result') = 'review_required'",
                 "validated_sandboxes": "SELECT COUNT(*) FROM m8_validation_outcomes "
                     "WHERE result = 'validated' AND status = 'COMPLETED'",
+                "sandbox_validations": "SELECT COUNT(*) FROM m8_validation_outcomes "
+                    "WHERE status = 'COMPLETED'",
+                "deployment_requests": "SELECT COUNT(*) FROM m8_deployment_requests",
                 "pending_requests": "SELECT COUNT(*) FROM m8_deployment_requests "
                     "WHERE state = 'awaiting_approval'",
                 "successful_m7_results": "SELECT COUNT(*) FROM enforcement_results "
@@ -38,19 +48,178 @@ class M8ReadModel:
                 "verified_outcomes": "SELECT COUNT(*) FROM post_enforcement_verifications "
                     "WHERE outcome = 'VERIFIED'",
             }
-            activity = _rows(db, """
-                SELECT occurred_at AS at, event_type AS label, outcome, target_id
-                FROM m8_audit_events
-                UNION ALL
-                SELECT received_at, 'profile_collected', 'observed', target_id
-                FROM profiles
-                UNION ALL
-                SELECT generated_at, 'compatibility_completed', 'provisional', target_id
-                FROM compatibility_reports
-                ORDER BY at DESC LIMIT 12
+            focus = self._focus(db)
+            workflow = self._workflow(db, focus["target_id"], focus["control_id"]) \
+                if focus else [
+                    {"key": key, "title": title, "state": None, "at": None,
+                     "related_id": None}
+                    for key, title in (("profile", "Profile"), ("analyze", "Analyze"),
+                                       ("sandbox", "Sandbox"), ("approve", "Approve"),
+                                       ("enforce", "Enforce"), ("verify", "Verify"))
+                ]
+            selected_controls = _rows(db, """
+                SELECT c.control_id, c.title, c.review_state
+                FROM m8_controls c JOIN m8_benchmarks b ON b.benchmark_id = c.benchmark_id
+                WHERE c.selected = 1 ORDER BY b.active DESC, c.control_id LIMIT 12
             """)
-            return {"counts": {key: int(db.execute(sql).fetchone()[0])
-                               for key, sql in counts.items()}, "activity": activity}
+            if focus:
+                for control in selected_controls:
+                    control_id = control["control_id"]
+                    target_id = focus["target_id"]
+                    assessed = _first(db, """
+                        SELECT state FROM m8_assessment_results
+                        WHERE target_id = ? AND control_id = ?
+                        ORDER BY observed_at DESC LIMIT 1
+                    """, (target_id, control_id))
+                    analyzed = _first(db, """
+                        SELECT json_extract(c.value, '$.result') AS decision
+                        FROM compatibility_reports r,
+                             json_each(r.payload_json, '$.control_results') c
+                        WHERE r.target_id = ?
+                          AND json_extract(c.value, '$.control_id') = ?
+                        ORDER BY r.generated_at DESC LIMIT 1
+                    """, (target_id, control_id))
+                    sandbox = _first(db, """
+                        SELECT v.result FROM sandbox_sessions s
+                        LEFT JOIN m8_validation_outcomes v
+                          ON v.sandbox_session_id = s.sandbox_session_id
+                        WHERE s.source_target_id = ? AND s.control_id = ?
+                        ORDER BY s.created_at DESC LIMIT 1
+                    """, (target_id, control_id))
+                    control.update(
+                        assessment_state=assessed["state"] if assessed else None,
+                        compatibility_decision=analyzed["decision"] if analyzed else None,
+                        sandbox_result=sandbox["result"] if sandbox else None,
+                    )
+            else:
+                for control in selected_controls:
+                    control.update(assessment_state=None, compatibility_decision=None,
+                                   sandbox_result=None)
+            result = {
+                "counts": {key: int(db.execute(sql).fetchone()[0])
+                           for key, sql in counts.items()},
+                "focus": focus, "workflow": workflow,
+                "selected_controls": selected_controls,
+                "read_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        result["activity"] = self.audit()[:6]
+        return result
+
+    @staticmethod
+    def _focus(db: sqlite3.Connection, target_id: str | None = None) -> dict | None:
+        """Choose a real target/control with the most recent sandbox lineage."""
+
+        focus = _first(db, """
+            SELECT t.target_id, s.control_id,
+                   json_extract(t.observed_metadata_json, '$.hostname') AS hostname,
+                   t.status AS target_status
+            FROM sandbox_sessions s JOIN targets t ON t.target_id = s.source_target_id
+            WHERE (? IS NULL OR s.source_target_id = ?)
+            ORDER BY s.created_at DESC LIMIT 1
+        """, (target_id, target_id))
+        if focus:
+            return focus
+        focus = _first(db, """
+            SELECT t.target_id, r.control_id,
+                   json_extract(t.observed_metadata_json, '$.hostname') AS hostname,
+                   t.status AS target_status
+            FROM m8_assessment_results r JOIN targets t ON t.target_id = r.target_id
+            WHERE (? IS NULL OR r.target_id = ?)
+            ORDER BY r.observed_at DESC LIMIT 1
+        """, (target_id, target_id))
+        if focus:
+            return focus
+        focus = _first(db, """
+            SELECT t.target_id, json_extract(c.value, '$.control_id') AS control_id,
+                   json_extract(t.observed_metadata_json, '$.hostname') AS hostname,
+                   t.status AS target_status
+            FROM compatibility_reports r JOIN targets t ON t.target_id = r.target_id,
+                 json_each(r.payload_json, '$.control_results') c
+            WHERE (? IS NULL OR r.target_id = ?)
+            ORDER BY r.generated_at DESC, control_id LIMIT 1
+        """, (target_id, target_id))
+        if focus:
+            return focus
+        return _first(db, """
+            SELECT t.target_id, NULL AS control_id,
+                   json_extract(t.observed_metadata_json, '$.hostname') AS hostname,
+                   t.status AS target_status
+            FROM targets t WHERE (? IS NULL OR t.target_id = ?)
+            ORDER BY COALESCE(t.last_seen, t.created_at) DESC LIMIT 1
+        """, (target_id, target_id))
+
+    @staticmethod
+    def _workflow(db: sqlite3.Connection, target_id: str, control_id: str | None) -> list[dict]:
+        """Latest stored state per stage for one target/control, never a verdict."""
+
+        stages = [
+            ("profile", "Profile", _first(db, """
+                SELECT profile_id AS related_id, received_at AS at, 'stored' AS state
+                FROM profiles WHERE target_id = ? ORDER BY received_at DESC LIMIT 1
+            """, (target_id,))),
+        ]
+        if control_id:
+            stages.extend([
+                ("analyze", "Analyze", _first(db, """
+                    SELECT r.compatibility_report_id AS related_id,
+                           r.generated_at AS at,
+                           json_extract(c.value, '$.result') AS state
+                    FROM compatibility_reports r,
+                         json_each(r.payload_json, '$.control_results') c
+                    WHERE r.target_id = ? AND json_extract(c.value, '$.control_id') = ?
+                    ORDER BY r.generated_at DESC LIMIT 1
+                """, (target_id, control_id))),
+                ("sandbox", "Sandbox", _first(db, """
+                    SELECT s.sandbox_session_id AS related_id,
+                           COALESCE(v.completed_at, s.closed_at, s.completed_at,
+                                    s.created_at) AS at,
+                           CASE WHEN s.status IN ('FAILED', 'QUARANTINED')
+                                THEN lower(s.status)
+                                ELSE COALESCE(v.result, lower(s.status)) END AS state
+                    FROM sandbox_sessions s LEFT JOIN m8_validation_outcomes v
+                      ON v.sandbox_session_id = s.sandbox_session_id
+                    WHERE s.source_target_id = ? AND s.control_id = ?
+                    ORDER BY s.created_at DESC LIMIT 1
+                """, (target_id, control_id))),
+                ("approve", "Approve", _first(db, """
+                    SELECT d.deployment_id AS related_id,
+                           COALESCE(a.decided_at, d.requested_at) AS at,
+                           COALESCE(a.decision, d.state) AS state
+                    FROM m8_deployment_requests d LEFT JOIN m8_approvals a
+                      ON a.deployment_id = d.deployment_id
+                    WHERE d.target_id = ? AND d.control_id = ?
+                    ORDER BY d.requested_at DESC, a.decided_at DESC LIMIT 1
+                """, (target_id, control_id))),
+                ("enforce", "Enforce", _first(db, """
+                    SELECT j.enforcement_job_id AS related_id,
+                           COALESCE(r.received_at, j.completed_at,
+                                    j.dispatched_at, j.created_at) AS at,
+                           COALESCE(r.outcome, j.status) AS state
+                    FROM enforcement_jobs j LEFT JOIN enforcement_results r
+                      ON r.enforcement_job_id = j.enforcement_job_id
+                    WHERE j.target_id = ? AND j.control_id = ?
+                    ORDER BY j.created_at DESC LIMIT 1
+                """, (target_id, control_id))),
+                ("verify", "Verify", _first(db, """
+                    SELECT v.enforcement_result_id AS related_id,
+                           v.verified_at AS at, v.outcome AS state
+                    FROM post_enforcement_verifications v JOIN enforcement_results r
+                      ON r.enforcement_result_id = v.enforcement_result_id
+                    WHERE v.target_id = ? AND r.control_id = ?
+                    ORDER BY v.verified_at DESC LIMIT 1
+                """, (target_id, control_id))),
+            ])
+        else:
+            stages.extend((key, title, None) for key, title in (
+                ("analyze", "Analyze"), ("sandbox", "Sandbox"),
+                ("approve", "Approve"), ("enforce", "Enforce"),
+                ("verify", "Verify"),
+            ))
+        return [{"key": key, "title": title,
+                 "state": record["state"] if record else None,
+                 "at": record["at"] if record else None,
+                 "related_id": record["related_id"] if record else None}
+                for key, title, record in stages]
 
     def targets(self) -> list[dict]:
         with _open_read_only(self.database) as db:
@@ -63,6 +232,8 @@ class M8ReadModel:
                        json_extract(t.observed_metadata_json, '$.architecture') AS architecture,
                        (SELECT p.profile_id FROM profiles p WHERE p.target_id = t.target_id
                         ORDER BY p.received_at DESC, p.profile_id DESC LIMIT 1) AS latest_profile_id,
+                       (SELECT p.received_at FROM profiles p WHERE p.target_id = t.target_id
+                        ORDER BY p.received_at DESC, p.profile_id DESC LIMIT 1) AS latest_profile_at,
                        (SELECT v.outcome FROM post_enforcement_verifications v
                         WHERE v.target_id = t.target_id ORDER BY v.verified_at DESC LIMIT 1)
                         AS latest_verification
@@ -83,7 +254,7 @@ class M8ReadModel:
             """, (target_id,)).fetchone()
             if target is None:
                 return None
-            return {
+            detail = {
                 "target": dict(target),
                 "profiles": _rows(db, """
                     SELECT profile_id, collected_at, received_at, profile_sha256,
@@ -99,6 +270,13 @@ class M8ReadModel:
                     FROM compatibility_reports WHERE target_id = ?
                     ORDER BY generated_at DESC LIMIT 100
                 """, (target_id,)),
+                "selected_controls": _rows(db, """
+                    SELECT c.control_id, c.title, c.review_state
+                    FROM m8_controls c JOIN m8_benchmarks b
+                      ON b.benchmark_id = c.benchmark_id
+                    WHERE c.selected = 1
+                    ORDER BY b.active DESC, c.control_id LIMIT 12
+                """),
                 "sandboxes": _rows(db, """
                     SELECT sandbox_session_id, source_profile_id,
                            source_compatibility_report_id, control_id, status, created_at,
@@ -117,6 +295,12 @@ class M8ReadModel:
                     WHERE target_id = ? ORDER BY verified_at DESC LIMIT 100
                 """, (target_id,)),
             }
+            focus = self._focus(db, target_id)
+            detail["focus_control_id"] = focus["control_id"] if focus else None
+            detail["workflow"] = self._workflow(db, target_id, detail["focus_control_id"])
+        detail["timeline"] = [event for event in self.audit()
+                              if event["target_id"] == target_id][:8]
+        return detail
 
     def controls_and_assessments(self) -> dict[str, list[dict]]:
         with _open_read_only(self.database) as db:
@@ -165,7 +349,8 @@ class M8ReadModel:
             return _rows(db, """
                 SELECT s.sandbox_session_id, s.source_target_id AS target_id,
                        s.source_profile_id AS profile_id, s.control_id,
-                       s.provider_type, s.status, s.created_at, s.closed_at,
+                       s.provider_type, s.status, s.created_at, s.ready_at,
+                       s.completed_at, s.closed_at,
                        s.failure_reason, s.quarantine_reason,
                        v.result, v.result_sha256
                 FROM sandbox_sessions s LEFT JOIN m8_validation_outcomes v

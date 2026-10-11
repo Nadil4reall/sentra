@@ -3,31 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>{{ title }} · SENTRA</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sentra.css') }}">
 </head>
 <body>
+  <a class="skip-link" href="#content">Skip to content</a>
   {% if current_user %}
   <header class="site-header">
-    <div class="brand"><a href="{{ url_for('dashboard') }}">SENTRA</a><span>Security Control Assessment &amp; Enforcement</span></div>
-    <div class="user-tools"><span>{{ current_user.username }} · {{ current_user.roles|join(', ') }}</span>
-      <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="quiet" type="submit">Sign out</button></form>
+    <a class="brand" href="{{ url_for('dashboard') }}" aria-label="SENTRA overview"><span class="brand-symbol" aria-hidden="true">S</span><span class="brand-word">SENTRA<small>Security Control Assessment &amp; Enforcement</small></span></a>
+    <div class="header-meta"><span class="header-context"><span class="live-dot" aria-hidden="true"></span> Controller records</span><span class="user-identity">{{ current_user.username }} <small>{{ current_user.roles|join(' · ') }}</small></span>
+      <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button button-ghost button-small" type="submit">Sign out</button></form>
     </div>
   </header>
   <div class="app-shell">
     <nav aria-label="Primary" class="sidebar">
-      <a href="{{ url_for('dashboard') }}">Overview</a>
-      <a href="{{ url_for('targets') }}">Targets</a>
-      <a href="{{ url_for('controls') }}">Controls &amp; assessments</a>
-      <a href="{{ url_for('compatibility') }}">Compatibility</a>
-      <a href="{{ url_for('sandboxes') }}">Sandbox validation</a>
-      <a href="{{ url_for('deployments') }}">Controlled enforcement</a>
-      <a href="{{ url_for('evidence') }}">Evidence</a>
-      <a href="{{ url_for('audit') }}">Audit trail</a>
+      <div class="nav-group"><span class="nav-caption">Workspace</span>
+        <a class="nav-link{% if request.endpoint == 'dashboard' %} is-active{% endif %}" {% if request.endpoint == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard') }}"><span class="nav-index">01</span>Overview</a>
+        <a class="nav-link{% if request.endpoint in ('targets', 'target_detail', 'target_control') %} is-active{% endif %}" {% if request.endpoint in ('targets', 'target_detail', 'target_control') %}aria-current="page"{% endif %} href="{{ url_for('targets') }}"><span class="nav-index">02</span>Targets</a>
+        <a class="nav-link{% if request.endpoint == 'controls' %} is-active{% endif %}" {% if request.endpoint == 'controls' %}aria-current="page"{% endif %} href="{{ url_for('controls') }}"><span class="nav-index">03</span>Controls &amp; assessments</a>
+      </div>
+      <div class="nav-group"><span class="nav-caption">Workflow</span>
+        <a class="nav-link{% if request.endpoint == 'compatibility' %} is-active{% endif %}" {% if request.endpoint == 'compatibility' %}aria-current="page"{% endif %} href="{{ url_for('compatibility') }}"><span class="nav-index">04</span>Compatibility</a>
+        <a class="nav-link{% if request.endpoint == 'sandboxes' %} is-active{% endif %}" {% if request.endpoint == 'sandboxes' %}aria-current="page"{% endif %} href="{{ url_for('sandboxes') }}"><span class="nav-index">05</span>Sandbox validation</a>
+        <a class="nav-link{% if request.endpoint == 'deployments' %} is-active{% endif %}" {% if request.endpoint == 'deployments' %}aria-current="page"{% endif %} href="{{ url_for('deployments') }}"><span class="nav-index">06</span>Controlled enforcement</a>
+      </div>
+      <div class="nav-group"><span class="nav-caption">Traceability</span>
+        <a class="nav-link{% if request.endpoint == 'evidence' %} is-active{% endif %}" {% if request.endpoint == 'evidence' %}aria-current="page"{% endif %} href="{{ url_for('evidence') }}"><span class="nav-index">07</span>Evidence</a>
+        <a class="nav-link{% if request.endpoint == 'audit' %} is-active{% endif %}" {% if request.endpoint == 'audit' %}aria-current="page"{% endif %} href="{{ url_for('audit') }}"><span class="nav-index">08</span>Operational timeline</a>
+      </div>
+      <div class="nav-footer"><span class="nav-footer-mark" aria-hidden="true"></span><span>Research prototype<br><small>Evidence before action</small></span></div>
     </nav>
     <main id="content" class="content">
   {% else %}
-  <main id="content" class="login-shell">
+    <main id="content" class="login-shell">
   {% endif %}
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% for category, message in messages %}<div class="notice {{ category }}" role="status">{{ message }}</div>{% endfor %}

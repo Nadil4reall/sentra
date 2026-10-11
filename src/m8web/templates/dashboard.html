@@ -1,15 +1,37 @@
 {% extends "base.html" %}
+{% from "_ui.html" import badge, empty_state, workflow, timeline %}
 {% block content %}
-<div class="page-heading"><div><div class="eyebrow">Selected-control research scope</div><h1>Overview</h1><p>Operational records from the canonical Controller database. No compliance score is inferred from compatibility decisions.</p></div></div>
-<section class="metric-grid" aria-label="Workflow counts">
-  {% for label, key in [('Enrolled targets','targets'),('M3 profiles','profiles'),('Assessments','assessments'),('M4 review decisions','m4_review_decisions'),('Validated sandbox results','validated_sandboxes'),('Pending requests','pending_requests'),('Successful M7 results','successful_m7_results'),('Fresh verified outcomes','verified_outcomes')] %}
-  <article class="metric"><span>{{ label }}</span><strong>{{ snapshot.counts[key] }}</strong></article>
+<section class="overview-hero">
+  <div class="hero-main"><span class="hero-kicker"><span class="live-dot" aria-hidden="true"></span> SENTRA · Research operations</span><h1>Security<br>Overview<span class="hero-period">.</span></h1><p>From the first host profile to fresh post-enforcement verification, every stage retains its own evidence and decision boundary.</p><a class="hero-link" href="{{ url_for('targets') }}">Explore targets <span aria-hidden="true">↗</span></a></div>
+  <div class="hero-aside"><span class="hero-aside-label">Data source</span><strong>Canonical Controller database</strong><span>Read at {{ snapshot.read_at }}</span><span>Stored snapshots, not a live compliance scan.</span></div>
+</section>
+
+<section class="metric-grid" aria-label="Stored workflow counts">
+  {% for label, key, caption in [
+    ('Enrolled targets','targets','Managed hosts'),
+    ('M3 profiles','profiles','Historical snapshots'),
+    ('M4 reports','compatibility_reports','Compatibility analysis'),
+    ('Sandbox validations','sandbox_validations','Completed M6 evidence'),
+    ('Deployment requests','deployment_requests','M8 review records'),
+    ('Fresh verified outcomes','verified_outcomes','Post-enforcement checks')
+  ] %}
+  <article class="metric"><span>{{ label }}</span><strong>{{ snapshot.counts[key] }}</strong><small>{{ caption }}</small></article>
   {% endfor %}
 </section>
-<section class="panel"><div class="section-head"><h2>Recent activity</h2><a href="{{ url_for('audit') }}">Operational timeline</a></div>
-  {% if snapshot.activity %}<div class="table-wrap"><table><thead><tr><th>When</th><th>Event</th><th>State</th><th>Target</th></tr></thead><tbody>
-  {% for item in snapshot.activity %}<tr><td>{{ item.at }}</td><td>{{ item.label|replace('_',' ') }}</td><td><span class="badge">{{ item.outcome }}</span></td><td>{% if item.target_id %}<a href="{{ url_for('target_detail', target_id=item.target_id) }}">{{ item.target_id }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}
-  </tbody></table></div>{% else %}<p class="empty">No operational activity has been recorded yet.</p>{% endif %}
+
+<section class="panel workflow-panel" aria-labelledby="workflow-title">
+  <div class="section-head"><div><div class="eyebrow">The SENTRA path</div><h2 id="workflow-title">Evidence before action.</h2><p>Latest stored state for one target and control. Stages can belong to different assessment cycles; inspect the full lineage before drawing conclusions.</p></div>{% if snapshot.focus and snapshot.focus.control_id %}<a class="text-link" href="{{ url_for('target_control', target_id=snapshot.focus.target_id, control_id=snapshot.focus.control_id) }}">Full control history <span aria-hidden="true">↗</span></a>{% endif %}</div>
+  {% if snapshot.focus %}<div class="focus-strip"><span class="focus-icon" aria-hidden="true">⌁</span><div><small>Selected operational focus</small><strong>{{ snapshot.focus.hostname or 'Unnamed target' }}{% if snapshot.focus.control_id %} · Control {{ snapshot.focus.control_id }}{% endif %}</strong><code>{{ snapshot.focus.target_id }}</code></div>{{ badge(snapshot.focus.target_status) }}</div>{% else %}<div class="focus-strip focus-strip-empty"><span class="focus-icon" aria-hidden="true">⌁</span><div><small>Awaiting first enrollment</small><strong>No target is stored yet.</strong><span>The workflow below remains unrecorded until real evidence arrives.</span></div></div>{% endif %}
+  {{ workflow(snapshot.workflow) }}
+  <div class="workflow-foot"><span class="mini-indicator" aria-hidden="true"></span> A sandbox validation is not production deployment. M8 approval does not itself run M7.</div>
 </section>
-<p class="disclaimer">Review and provisional states are preserved per control and are not converted into compliance verdicts. A sandbox result is not a target-compliance verdict.</p>
+
+<div class="overview-columns">
+  <section class="panel" aria-labelledby="controls-title"><div class="section-head"><div><div class="eyebrow">Selected controls</div><h2 id="controls-title">Coverage at a glance</h2><p>Stored states for the selected focus target, when one exists.</p></div><a class="text-link" href="{{ url_for('controls') }}">All controls <span aria-hidden="true">↗</span></a></div>
+    {% if snapshot.selected_controls %}<div class="control-summary-list">{% for control in snapshot.selected_controls %}<div class="control-summary"><span class="control-number">{{ control.control_id }}</span><div><strong>{{ control.title }}</strong><small>{% if control.assessment_state %}Assessment · {{ control.assessment_state|replace('_',' ') }}{% else %}Assessment not recorded{% endif %}</small></div><div class="control-status">{% if control.sandbox_result %}{{ badge(control.sandbox_result) }}{% elif control.compatibility_decision %}{{ badge(control.compatibility_decision) }}{% else %}{{ badge(control.review_state, 'Not assessed') }}{% endif %}</div></div>{% endfor %}</div>{% else %}{{ empty_state('No selected-control catalogue has been imported. No assessment status is inferred.') }}{% endif %}
+  </section>
+  <section class="panel activity-panel" aria-labelledby="activity-title"><div class="section-head"><div><div class="eyebrow">Traceability</div><h2 id="activity-title">Recent activity</h2><p>Real operational events and attributed M8 user actions.</p></div><a class="text-link" href="{{ url_for('audit') }}">Operational timeline <span aria-hidden="true">↗</span></a></div>{% if snapshot.activity %}{{ timeline(snapshot.activity, true) }}{% else %}{{ empty_state('No operational activity has been recorded yet.') }}{% endif %}</section>
+</div>
+
+<div class="overview-note"><div><strong>Interpretation matters.</strong><span>Review and provisional states are preserved per control and are not converted into compliance verdicts. A sandbox result is not a target-compliance verdict.</span></div><div class="overview-note-metrics"><span>M4 review decisions <strong>{{ snapshot.counts.m4_review_decisions }}</strong></span><span>Validated sandbox results <strong>{{ snapshot.counts.validated_sandboxes }}</strong></span><span>Successful M7 results <strong>{{ snapshot.counts.successful_m7_results }}</strong></span></div></div>
 {% endblock %}

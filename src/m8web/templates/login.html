@@ -1,14 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="login-card">
-  <div class="eyebrow">SENTRA · Research prototype</div>
-  <h1>Sign in to SENTRA</h1>
-  <p class="muted">Inspect selected-control evidence and manage bounded deployment requests.</p>
-  <form method="post" action="{{ url_for('login') }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" required maxlength="128">
-    <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
-    <button type="submit">Sign in</button>
-  </form>
+<div class="login-stage">
+  <section class="login-intro" aria-label="About SENTRA">
+    <div class="login-brand"><span class="brand-symbol" aria-hidden="true">S</span><span>SENTRA</span></div>
+    <div class="login-intro-copy"><div class="eyebrow eyebrow-light">A measured path to action</div><h1>Security decisions,<br>with evidence at<br>every step.</h1><p>Security Control Assessment &amp; Enforcement</p></div>
+    <div class="login-path" aria-label="Research workflow"><span>Profile</span><span>Analyze</span><span>Sandbox</span><span>Approve</span><span>Enforce</span><span>Verify</span></div>
+    <p class="login-footnote">SENTRA is a selected-control research prototype. A sandbox result is not a compliance verdict.</p>
+  </section>
+  <section class="login-card" aria-labelledby="login-title">
+    <div class="eyebrow">Welcome back</div>
+    <h2 id="login-title">Sign in to SENTRA</h2>
+    <p>Review target evidence, validation history and controlled enforcement decisions.</p>
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" required maxlength="128">
+      <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="button button-primary login-submit" type="submit">Sign in <span aria-hidden="true">↗</span></button>
+    </form>
+    <div class="login-card-foot"><span class="live-dot" aria-hidden="true"></span>Protected research workspace</div>
+  </section>
 </div>
 {% endblock %}
