@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from src.controller.enforcement import verify_enforcement_delivery
-from src.controller.models import EnforcementJobDelivery
+from src.controller.models import EnforcementJobDelivery, EnforcementResultRecord
 from src.sandbox_protocol.models import PasswdSourceState
 
 
@@ -68,9 +68,30 @@ class EnforcementJournalEntry(BaseModel):
     rollback_succeeded: bool | None = None
     execution_started_at: AwareDatetime | None = None
     execution_finished_at: AwareDatetime | None = None
+    controller_result_id: UUID | None = None
+    controller_result_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$",
+    )
+    acknowledged_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "EnforcementJournalEntry":
+        acknowledgements = (
+            self.controller_result_id, self.controller_result_sha256,
+            self.acknowledged_at,
+        )
+        if any(value is None for value in acknowledgements) != all(
+            value is None for value in acknowledgements
+        ):
+            raise ValueError("enforcement acknowledgement is incomplete")
+        if self.acknowledged_at is not None and self.outcome.value not in {
+            "SUCCEEDED", "BLOCKED_DRIFT", "FAILED", "ROLLED_BACK", "ROLLBACK_FAILED",
+        }:
+            raise ValueError("nonterminal enforcement cannot be acknowledged")
+        if self.acknowledged_at is not None and self.acknowledged_at < (
+            self.execution_finished_at or self.updated_at or self.recorded_at
+        ):
+            raise ValueError("enforcement acknowledgement precedes terminal evidence")
         if self.outcome is EnforcementPreflightOutcome.PREPARED and (
             self.observed_source_state != self.expected_source_state
             or self.mutation_attempted
@@ -314,6 +335,93 @@ class EnforcementJournalStore:
             raise EnforcementJournalError("enforcement drift outcome is inconsistent")
         with self.acquire(delivery, target_id=target_id, agent_id=agent_id) as locked:
             return locked.prepare(observed, outcome)
+
+    def pending_results(
+        self, *, target_id: UUID, agent_id: UUID,
+    ) -> list[EnforcementJournalEntry]:
+        """Find only protected, terminal, unacknowledged entries for retry."""
+
+        self._ensure_directory()
+        pending: list[EnforcementJournalEntry] = []
+        for name in sorted(os.listdir(self.directory)):
+            if not name.endswith(".json"):
+                continue
+            raw_id = name[:-5]
+            try:
+                job_id = UUID(raw_id)
+            except ValueError:
+                raise EnforcementJournalError("enforcement journal filename is invalid") from None
+            if raw_id != str(job_id):
+                raise EnforcementJournalError("enforcement journal filename is noncanonical")
+            entry = self._load(job_id)
+            if entry is None or entry.enforcement_job_id != job_id:
+                raise EnforcementJournalError("enforcement journal filename conflicts")
+            if entry.target_id != target_id or entry.agent_id != agent_id:
+                raise EnforcementJournalError("enforcement journal identity conflicts")
+            if entry.acknowledged_at is None and entry.outcome.value in {
+                "SUCCEEDED", "BLOCKED_DRIFT", "FAILED", "ROLLED_BACK", "ROLLBACK_FAILED",
+            }:
+                pending.append(entry)
+        return pending
+
+    def acknowledge_result(
+        self, entry: EnforcementJournalEntry, record: EnforcementResultRecord,
+    ) -> EnforcementJournalEntry:
+        """Durably bind the Controller response to the exact terminal payload."""
+
+        from src.agent.enforcement_result import payload_from_trusted_journal
+        from src.controller.enforcement import canonical_enforcement_payload_json
+
+        self._ensure_directory()
+        lock_fd = os.open(
+            self.directory / f"{entry.enforcement_job_id}.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600,
+        )
+        try:
+            self._private_file(os.fstat(lock_fd))
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            current = self._load(entry.enforcement_job_id)
+            if current is None:
+                raise EnforcementJournalError("enforcement journal disappeared")
+            expected_payload = payload_from_trusted_journal(
+                current, target_id=current.target_id, agent_id=current.agent_id,
+            )
+            expected_sha = hashlib.sha256(
+                canonical_enforcement_payload_json(expected_payload).encode("utf-8")
+            ).hexdigest()
+            if (
+                record.enforcement_job_id != current.enforcement_job_id
+                or record.target_id != current.target_id
+                or record.agent_id != current.agent_id
+                or record.payload != expected_payload
+                or record.result_sha256 != expected_sha
+                or current.model_dump(
+                    exclude={"controller_result_id", "controller_result_sha256", "acknowledged_at"}
+                ) != entry.model_dump(
+                    exclude={"controller_result_id", "controller_result_sha256", "acknowledged_at"}
+                )
+            ):
+                raise EnforcementJournalError("Controller enforcement acknowledgement conflicts")
+            if current.acknowledged_at is not None:
+                if (
+                    current.controller_result_id != record.enforcement_result_id
+                    or current.controller_result_sha256 != record.result_sha256
+                ):
+                    raise EnforcementJournalError("Controller enforcement acknowledgement changed")
+                return current
+            values = current.model_dump(mode="python")
+            values.update(
+                controller_result_id=record.enforcement_result_id,
+                controller_result_sha256=record.result_sha256,
+                acknowledged_at=datetime.now(UTC),
+            )
+            updated = EnforcementJournalEntry.model_validate(values, strict=True)
+            self._write(updated)
+            return updated
+        except BlockingIOError:
+            raise EnforcementJournalError("enforcement job is already active") from None
+        finally:
+            os.close(lock_fd)
 
 
 class LockedEnforcementJournal:

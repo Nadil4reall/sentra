@@ -240,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             sandbox_validation_acknowledged=args.sandbox_validation_ack,
             retry_interrupted_enforcement=args.retry_interrupted_enforcement,
+            enforcement_result_submission_enabled=True,
         )
         result = runtime.run_once()
     except (

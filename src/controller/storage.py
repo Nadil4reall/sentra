@@ -24,7 +24,12 @@ from pydantic import ValidationError
 from src.compatibility_engine.models import CompatibilityReport
 from src.controller.models import (
     CompatibilityReportRecord,
+    EnforcementOutcome,
     EnforcementJobRecord,
+    EnforcementResultPayload,
+    EnforcementResultRecord,
+    PostEnforcementVerificationOutcome,
+    PostEnforcementVerificationRecord,
     JobRecord,
     JobStatus,
     JobType,
@@ -47,6 +52,11 @@ from src.controller.validation import (
     compatibility_reference_from_record,
     require_payload_matches_job,
 )
+from src.controller.enforcement import (
+    canonical_enforcement_payload_json, observed_passwd_state,
+    post_enforcement_outcome,
+)
+from src.controller.sandbox_context import derive_sandbox_context
 from src.sandbox_validator.models import CompatibilityReference, ExecutionMode
 from src.target_profiler.models import TargetProfile
 
@@ -212,6 +222,20 @@ class ControllerRepository(Protocol):
         self, *, target_id: UUID, agent_id: UUID,
         dispatched_at: datetime, limit: int,
     ) -> list[EnforcementJobRecord]: ...
+
+    def get_enforcement_job(self, enforcement_job_id: UUID) -> EnforcementJobRecord | None: ...
+
+    def store_enforcement_result(
+        self, record: EnforcementResultRecord, payload_json: str,
+    ) -> EnforcementResultRecord: ...
+
+    def get_enforcement_result_for_job(
+        self, enforcement_job_id: UUID,
+    ) -> EnforcementResultRecord | None: ...
+
+    def get_post_enforcement_verification(
+        self, enforcement_result_id: UUID,
+    ) -> PostEnforcementVerificationRecord | None: ...
 
     def get_validation_job(
         self, validation_job_id: UUID
@@ -892,6 +916,115 @@ _CREATE_ENFORCEMENT_JOBS_SQL = """
             REFERENCES agents(target_id, agent_id)
     )
 """
+_CREATE_ENFORCEMENT_JOBS_M7D_SQL = """
+    CREATE TABLE enforcement_jobs (
+        enforcement_job_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        target_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        compatibility_report_id TEXT NOT NULL,
+        sandbox_session_id TEXT NOT NULL,
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        job_type TEXT NOT NULL CHECK (job_type = 'ENFORCE_CONTROL'),
+        administrator_enforcement_approval_acknowledged INTEGER NOT NULL
+            CHECK (administrator_enforcement_approval_acknowledged = 1),
+        sandbox_evidence_sha256 TEXT NOT NULL CHECK (
+            length(sandbox_evidence_sha256) = 64
+            AND sandbox_evidence_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched', 'completed')),
+        created_at TEXT NOT NULL,
+        assigned_agent_id TEXT,
+        dispatched_at TEXT,
+        completed_at TEXT,
+        CHECK (
+            (status = 'pending' AND assigned_agent_id IS NULL
+                AND dispatched_at IS NULL AND completed_at IS NULL)
+            OR (status = 'dispatched' AND assigned_agent_id IS NOT NULL
+                AND dispatched_at IS NOT NULL AND completed_at IS NULL)
+            OR (status = 'completed' AND assigned_agent_id IS NOT NULL
+                AND dispatched_at IS NOT NULL AND completed_at IS NOT NULL)
+        ),
+        UNIQUE (
+            target_id, profile_id, compatibility_report_id,
+            sandbox_session_id, enforcement_job_id
+        ),
+        UNIQUE (target_id, enforcement_job_id, assigned_agent_id),
+        FOREIGN KEY (target_id) REFERENCES targets(target_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id),
+        FOREIGN KEY (target_id, profile_id, compatibility_report_id)
+            REFERENCES compatibility_reports(
+                target_id, profile_id, compatibility_report_id
+            ),
+        FOREIGN KEY (
+            target_id, profile_id, compatibility_report_id,
+            sandbox_session_id
+        ) REFERENCES sandbox_sessions (
+            source_target_id, source_profile_id,
+            source_compatibility_report_id, sandbox_session_id
+        ),
+        FOREIGN KEY (sandbox_session_id)
+            REFERENCES sandbox_validation_executions(sandbox_session_id),
+        FOREIGN KEY (target_id, assigned_agent_id)
+            REFERENCES agents(target_id, agent_id)
+    )
+"""
+
+_ENFORCEMENT_RESULT_COLUMNS = {
+    "enforcement_result_id", "enforcement_job_id", "target_id", "agent_id",
+    "control_id", "m6_evidence_sha256", "outcome", "received_at",
+    "result_sha256", "payload_json", "post_enforcement_profile_job_id",
+}
+_CREATE_ENFORCEMENT_RESULTS_SQL = """
+    CREATE TABLE enforcement_results (
+        enforcement_result_id TEXT PRIMARY KEY,
+        enforcement_job_id TEXT NOT NULL UNIQUE,
+        target_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        control_id TEXT NOT NULL CHECK (control_id = '7.1.1'),
+        m6_evidence_sha256 TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN (
+            'SUCCEEDED', 'BLOCKED_DRIFT', 'FAILED', 'ROLLED_BACK', 'ROLLBACK_FAILED'
+        )),
+        received_at TEXT NOT NULL,
+        result_sha256 TEXT NOT NULL CHECK (
+            length(result_sha256) = 64
+            AND result_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        payload_json TEXT NOT NULL,
+        post_enforcement_profile_job_id TEXT NOT NULL UNIQUE,
+        UNIQUE (target_id, enforcement_result_id),
+        FOREIGN KEY (target_id, enforcement_job_id, agent_id)
+            REFERENCES enforcement_jobs(target_id, enforcement_job_id, assigned_agent_id),
+        FOREIGN KEY (target_id, post_enforcement_profile_job_id)
+            REFERENCES jobs(target_id, job_id)
+    )
+"""
+_POST_ENFORCEMENT_VERIFICATION_COLUMNS = {
+    "enforcement_result_id", "target_id", "profile_job_id", "profile_id",
+    "profile_sha256", "outcome", "observed_source_state_json", "verified_at",
+}
+_CREATE_POST_ENFORCEMENT_VERIFICATIONS_SQL = """
+    CREATE TABLE post_enforcement_verifications (
+        enforcement_result_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL,
+        profile_job_id TEXT NOT NULL UNIQUE,
+        profile_id TEXT NOT NULL UNIQUE,
+        profile_sha256 TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN (
+            'VERIFIED', 'DRIFT_DETECTED', 'OBSERVED_FAILURE_STATE'
+        )),
+        observed_source_state_json TEXT,
+        verified_at TEXT NOT NULL,
+        FOREIGN KEY (target_id, enforcement_result_id)
+            REFERENCES enforcement_results(target_id, enforcement_result_id),
+        FOREIGN KEY (target_id, profile_job_id)
+            REFERENCES jobs(target_id, job_id),
+        FOREIGN KEY (target_id, profile_id)
+            REFERENCES profiles(target_id, profile_id)
+    )
+"""
 
 def _normalized_schema_sql(value: str) -> str:
     """Normalize insignificant SQL whitespace for an exact schema fingerprint."""
@@ -1174,38 +1307,68 @@ class SQLiteControllerRepository:
                     "RELEASE SAVEPOINT "
                     "sentra_m6e_validation_evidence_schema"
                 )
-            connection.execute("SAVEPOINT sentra_m7a_enforcement_schema")
+            connection.execute("SAVEPOINT sentra_m7d_enforcement_schema")
             try:
                 self._initialize_enforcement_storage(connection)
             except BaseException:
-                connection.execute("ROLLBACK TO SAVEPOINT sentra_m7a_enforcement_schema")
-                connection.execute("RELEASE SAVEPOINT sentra_m7a_enforcement_schema")
+                connection.execute("ROLLBACK TO SAVEPOINT sentra_m7d_enforcement_schema")
+                connection.execute("RELEASE SAVEPOINT sentra_m7d_enforcement_schema")
                 raise
             else:
-                connection.execute("RELEASE SAVEPOINT sentra_m7a_enforcement_schema")
+                connection.execute("RELEASE SAVEPOINT sentra_m7d_enforcement_schema")
         self._validate_all_enforcement_jobs()
 
     @staticmethod
     def _initialize_enforcement_storage(connection: sqlite3.Connection) -> None:
+        result_tables = {
+            item["name"] for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('enforcement_results', 'post_enforcement_verifications')"
+            ).fetchall()
+        }
         row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' "
             "AND name = 'enforcement_jobs'"
         ).fetchone()
+        new_job_table = row is None
+        legacy_job_table = False
         if row is None:
-            connection.execute(_CREATE_ENFORCEMENT_JOBS_SQL)
-        elif (
-            isinstance(row["sql"], str)
-            and _normalized_schema_sql(row["sql"])
-            == _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7A_SQL)
-        ):
-            # Exact M7-A schema only: preserve its pending rows in an atomic,
-            # fail-closed table migration. No dispatched M7-A rows exist.
-            connection.execute(
-                "ALTER TABLE enforcement_jobs RENAME TO enforcement_jobs_m7a_backup"
+            if result_tables:
+                raise ControllerStorageSecurityError("enforcement schema is incomplete")
+            connection.execute(_CREATE_ENFORCEMENT_JOBS_M7D_SQL)
+        elif isinstance(row["sql"], str) and _normalized_schema_sql(row["sql"]) in {
+            _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7A_SQL),
+            _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_SQL),
+        }:
+            legacy_job_table = True
+            if result_tables:
+                # Older-schema fixture/rollback with new empty child tables:
+                # no evidence can be lost, so rebuild only those empty tables.
+                if result_tables != {
+                    "enforcement_results", "post_enforcement_verifications",
+                } or any(
+                    connection.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                    is not None for table in result_tables
+                ):
+                    raise ControllerStorageSecurityError(
+                        "enforcement migration contains result evidence"
+                    )
+                connection.execute("DROP TABLE post_enforcement_verifications")
+                connection.execute("DROP TABLE enforcement_results")
+                result_tables = set()
+            # Only exact older schemas are migrated; preserve their rows under
+            # a savepoint and reject malformed lineage on the subsequent scan.
+            is_m7a = (
+                _normalized_schema_sql(row["sql"])
+                == _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7A_SQL)
             )
-            connection.execute(_CREATE_ENFORCEMENT_JOBS_SQL)
             connection.execute(
-                """INSERT INTO enforcement_jobs (
+                "ALTER TABLE enforcement_jobs RENAME TO enforcement_jobs_m7_backup"
+            )
+            connection.execute(_CREATE_ENFORCEMENT_JOBS_M7D_SQL)
+            assignment = "NULL" if is_m7a else "assigned_agent_id"
+            connection.execute(
+                f"""INSERT INTO enforcement_jobs (
                     enforcement_job_id, request_id, target_id, profile_id,
                     compatibility_report_id, sandbox_session_id, control_id,
                     job_type, administrator_enforcement_approval_acknowledged,
@@ -1215,14 +1378,14 @@ class SQLiteControllerRepository:
                          compatibility_report_id, sandbox_session_id, control_id,
                          job_type, administrator_enforcement_approval_acknowledged,
                          sandbox_evidence_sha256, status, created_at,
-                         NULL, dispatched_at, completed_at
-                  FROM enforcement_jobs_m7a_backup"""
+                         {assignment}, dispatched_at, completed_at
+                  FROM enforcement_jobs_m7_backup"""
             )
-            connection.execute("DROP TABLE enforcement_jobs_m7a_backup")
+            connection.execute("DROP TABLE enforcement_jobs_m7_backup")
         elif (
             not isinstance(row["sql"], str)
             or _normalized_schema_sql(row["sql"])
-            != _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_SQL)
+            != _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7D_SQL)
         ):
             raise ControllerStorageSecurityError("enforcement schema is not recognized")
         columns = {
@@ -1236,16 +1399,82 @@ class SQLiteControllerRepository:
             "PRAGMA foreign_key_check(enforcement_jobs)"
         ).fetchall():
             raise ControllerStorageSecurityError("enforcement lineage is invalid")
+        expected_tables = {
+            "enforcement_results": (
+                _CREATE_ENFORCEMENT_RESULTS_SQL, _ENFORCEMENT_RESULT_COLUMNS,
+            ),
+            "post_enforcement_verifications": (
+                _CREATE_POST_ENFORCEMENT_VERIFICATIONS_SQL,
+                _POST_ENFORCEMENT_VERIFICATION_COLUMNS,
+            ),
+        }
+        if not result_tables and (new_job_table or legacy_job_table):
+            connection.execute(_CREATE_ENFORCEMENT_RESULTS_SQL)
+            connection.execute(_CREATE_POST_ENFORCEMENT_VERIFICATIONS_SQL)
+        elif result_tables != set(expected_tables):
+            raise ControllerStorageSecurityError("enforcement result schema is incomplete")
+        for table, (expected_sql, expected_columns) in expected_tables.items():
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            columns = {
+                item["name"] for item in connection.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if (
+                schema is None or not isinstance(schema["sql"], str)
+                or _normalized_schema_sql(schema["sql"])
+                != _normalized_schema_sql(expected_sql)
+                or columns != expected_columns
+                or connection.execute(f"PRAGMA foreign_key_check({table})").fetchall()
+            ):
+                raise ControllerStorageSecurityError(
+                    "enforcement result schema or lineage is invalid"
+                )
 
     def _validate_all_enforcement_jobs(self) -> None:
         with self._connection() as connection:
             rows = connection.execute("SELECT * FROM enforcement_jobs").fetchall()
             for row in rows:
                 try:
-                    self._enforcement_job_from_row(connection, row)
+                    job = self._enforcement_job_from_row(connection, row)
+                    result_row = connection.execute(
+                        "SELECT * FROM enforcement_results WHERE enforcement_job_id = ?",
+                        (str(job.enforcement_job_id),),
+                    ).fetchone()
+                    if (job.status is JobStatus.COMPLETED) != (result_row is not None):
+                        raise StorageConflictError("enforcement completion lacks evidence")
+                    if result_row is not None:
+                        result = self._enforcement_result_from_row(connection, result_row)[0]
+                        profile_job = connection.execute(
+                            "SELECT status FROM jobs WHERE job_id = ?",
+                            (str(result.post_enforcement_profile_job_id),),
+                        ).fetchone()
+                        verification_row = connection.execute(
+                            "SELECT * FROM post_enforcement_verifications "
+                            "WHERE enforcement_result_id = ?",
+                            (str(result.enforcement_result_id),),
+                        ).fetchone()
+                        if profile_job is None or (
+                            profile_job["status"] == JobStatus.COMPLETED.value
+                        ) != (verification_row is not None):
+                            raise StorageConflictError(
+                                "post-enforcement profile completion lacks verification"
+                            )
                 except (StorageConflictError, StorageNotFoundError) as error:
                     raise ControllerStorageSecurityError(
                         "stored enforcement job is invalid"
+                    ) from error
+            for row in connection.execute(
+                "SELECT * FROM post_enforcement_verifications"
+            ).fetchall():
+                try:
+                    self._post_enforcement_verification_from_row(connection, row)
+                except StorageConflictError as error:
+                    raise ControllerStorageSecurityError(
+                        "stored post-enforcement verification is invalid"
                     ) from error
 
     @staticmethod
@@ -1989,7 +2218,43 @@ class SQLiteControllerRepository:
                 raise StorageConflictError(
                     "profile receipt time precedes job dispatch"
                 )
-            self._validate_profile_payload(record, payload_json)
+            stored_profile = self._validate_profile_payload(record, payload_json)
+            enforcement_row = connection.execute(
+                "SELECT * FROM enforcement_results "
+                "WHERE post_enforcement_profile_job_id = ?",
+                (str(record.job_id),),
+            ).fetchone()
+            enforcement_result = None
+            verification = None
+            if enforcement_row is not None:
+                enforcement_result = self._enforcement_result_from_row(
+                    connection, enforcement_row,
+                )[0]
+                if (
+                    enforcement_result.target_id != record.target_id
+                    or enforcement_result.agent_id != record.agent_id
+                    or stored_profile.profile.collected_at
+                    < enforcement_result.payload.execution_completed_at
+                ):
+                    raise StorageConflictError(
+                        "post-enforcement profile is not fresh or correctly bound"
+                    )
+                try:
+                    observed = observed_passwd_state(stored_profile.profile)
+                except (ValueError, ValidationError):
+                    observed = None
+                verification = PostEnforcementVerificationRecord(
+                    enforcement_result_id=enforcement_result.enforcement_result_id,
+                    target_id=record.target_id,
+                    profile_job_id=record.job_id,
+                    profile_id=record.profile_id,
+                    profile_sha256=record.profile_sha256,
+                    outcome=post_enforcement_outcome(
+                        enforcement_result.payload, observed,
+                    ),
+                    observed_source_state=observed,
+                    verified_at=record.received_at,
+                )
             try:
                 connection.execute(
                     """
@@ -2026,6 +2291,28 @@ class SQLiteControllerRepository:
                     str(record.job_id),
                 ),
             )
+            if verification is not None:
+                try:
+                    connection.execute(
+                        """INSERT INTO post_enforcement_verifications (
+                            enforcement_result_id, target_id, profile_job_id,
+                            profile_id, profile_sha256, outcome,
+                            observed_source_state_json, verified_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(verification.enforcement_result_id),
+                            str(verification.target_id), str(verification.profile_job_id),
+                            str(verification.profile_id), verification.profile_sha256,
+                            verification.outcome.value,
+                            _canonical_json(verification.observed_source_state)
+                            if verification.observed_source_state is not None else None,
+                            verification.verified_at.isoformat(),
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise StorageConflictError(
+                        "post-enforcement verification lineage conflicts"
+                    ) from error
         return record
 
     @staticmethod
@@ -3199,6 +3486,284 @@ class SQLiteControllerRepository:
                         raise StorageConflictError("enforcement Agent binding is invalid")
                     claimed.append(claimed_job)
         return [*existing, *claimed]
+
+    def get_enforcement_job(self, enforcement_job_id: UUID) -> EnforcementJobRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM enforcement_jobs WHERE enforcement_job_id = ?",
+                (str(enforcement_job_id),),
+            ).fetchone()
+            return None if row is None else self._enforcement_job_from_row(connection, row)
+
+    def _approved_enforcement_state(
+        self, connection: sqlite3.Connection, job: EnforcementJobRecord,
+    ):
+        profile_row = connection.execute(
+            "SELECT * FROM profiles WHERE profile_id = ? AND target_id = ?",
+            (str(job.profile_id), str(job.target_id)),
+        ).fetchone()
+        report_row = connection.execute(
+            "SELECT * FROM compatibility_reports WHERE compatibility_report_id = ? "
+            "AND profile_id = ? AND target_id = ?",
+            (str(job.compatibility_report_id), str(job.profile_id), str(job.target_id)),
+        ).fetchone()
+        if profile_row is None or report_row is None:
+            raise StorageConflictError("enforcement M3/M4 lineage is missing")
+        profile = self._stored_profile_from_row(profile_row)
+        report = self._stored_compatibility_report_from_row(report_row)
+        self._validate_compatibility_report_lineage(report, profile)
+        try:
+            reference = compatibility_reference_from_record(report.record, "7.1.1")
+            return derive_sandbox_context(
+                "7.1.1", profile.profile, reference,
+            ).source_state
+        except (ValueError, ValidationError) as error:
+            raise StorageConflictError("approved passwd source state is invalid") from error
+
+    def _enforcement_result_from_row(
+        self, connection: sqlite3.Connection, row: sqlite3.Row,
+    ) -> tuple[EnforcementResultRecord, str]:
+        try:
+            payload = EnforcementResultPayload.model_validate_json(
+                row["payload_json"], strict=True,
+            )
+            canonical = canonical_enforcement_payload_json(payload)
+            if row["payload_json"] != canonical:
+                raise StorageConflictError("enforcement result payload is not canonical")
+            record = EnforcementResultRecord(
+                enforcement_result_id=_canonical_stored_uuid_text(
+                    row["enforcement_result_id"], "enforcement_result_id",
+                ),
+                enforcement_job_id=_canonical_stored_uuid_text(
+                    row["enforcement_job_id"], "enforcement_job_id",
+                ),
+                target_id=_canonical_stored_uuid_text(row["target_id"], "target_id"),
+                agent_id=_canonical_stored_uuid_text(row["agent_id"], "agent_id"),
+                outcome=EnforcementOutcome(row["outcome"]),
+                result_sha256=row["result_sha256"],
+                received_at=datetime.fromisoformat(row["received_at"]),
+                post_enforcement_profile_job_id=_canonical_stored_uuid_text(
+                    row["post_enforcement_profile_job_id"], "post profile job ID",
+                ),
+                payload=payload,
+            )
+            if (
+                _sha256(canonical) != record.result_sha256
+                or row["control_id"] != "7.1.1"
+                or row["m6_evidence_sha256"] != payload.m6_evidence_sha256
+            ):
+                raise StorageConflictError("enforcement result hash or columns conflict")
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError("stored enforcement result is malformed") from error
+        job_row = connection.execute(
+            "SELECT * FROM enforcement_jobs WHERE enforcement_job_id = ?",
+            (str(record.enforcement_job_id),),
+        ).fetchone()
+        profile_job_row = connection.execute(
+            "SELECT * FROM jobs WHERE job_id = ?",
+            (str(record.post_enforcement_profile_job_id),),
+        ).fetchone()
+        if job_row is None or profile_job_row is None:
+            raise StorageConflictError("enforcement result lineage is missing")
+        job = self._enforcement_job_from_row(connection, job_row)
+        approved = self._approved_enforcement_state(connection, job)
+        if (
+            job.status is not JobStatus.COMPLETED
+            or job.completed_at != record.received_at
+            or job.assigned_agent_id != record.agent_id
+            or job.target_id != record.target_id
+            or job.sandbox_evidence_sha256 != payload.m6_evidence_sha256
+            or job.control_id != payload.control_id
+            or approved != payload.expected_source_state
+            or profile_job_row["target_id"] != str(record.target_id)
+            or profile_job_row["job_type"] != JobType.PROFILE_TARGET.value
+            or profile_job_row["created_at"] != record.received_at.isoformat()
+        ):
+            raise StorageConflictError("enforcement result lineage does not match storage")
+        return record, canonical
+
+    def store_enforcement_result(
+        self, record: EnforcementResultRecord, payload_json: str,
+    ) -> EnforcementResultRecord:
+        if type(record) is not EnforcementResultRecord:
+            raise StorageConflictError("enforcement result record type is invalid")
+        try:
+            validated = EnforcementResultRecord.model_validate(
+                record.model_dump(mode="python"), strict=True,
+            )
+            canonical = canonical_enforcement_payload_json(validated.payload)
+        except (ValueError, ValidationError) as error:
+            raise StorageConflictError("enforcement result evidence is invalid") from error
+        if payload_json != canonical or _sha256(canonical) != record.result_sha256:
+            raise StorageConflictError("enforcement result is not canonical")
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job_row = connection.execute(
+                "SELECT * FROM enforcement_jobs WHERE enforcement_job_id = ?",
+                (str(record.enforcement_job_id),),
+            ).fetchone()
+            if job_row is None:
+                raise StorageNotFoundError("enforcement job does not exist")
+            job = self._enforcement_job_from_row(connection, job_row)
+            existing_row = connection.execute(
+                "SELECT * FROM enforcement_results WHERE enforcement_job_id = ?",
+                (str(record.enforcement_job_id),),
+            ).fetchone()
+            if existing_row is not None:
+                existing, stored_json = self._enforcement_result_from_row(
+                    connection, existing_row,
+                )
+                if (
+                    stored_json != canonical or existing.agent_id != record.agent_id
+                    or existing.result_sha256 != record.result_sha256
+                ):
+                    raise StorageConflictError("enforcement result replay changed")
+                return existing
+            if (
+                job.status is not JobStatus.DISPATCHED
+                or job.assigned_agent_id != record.agent_id
+                or job.target_id != record.target_id
+                or job.control_id != record.payload.control_id
+                or job.sandbox_evidence_sha256 != record.payload.m6_evidence_sha256
+                or job.administrator_enforcement_approval_acknowledged is not True
+                or self._approved_enforcement_state(connection, job)
+                != record.payload.expected_source_state
+                or job.dispatched_at is None
+                or record.payload.execution_completed_at < job.dispatched_at
+                or record.received_at < job.dispatched_at
+            ):
+                raise StorageConflictError("enforcement result conflicts with approved job")
+            try:
+                connection.execute(
+                    """INSERT INTO jobs (
+                        job_id, target_id, assigned_agent_id, job_type, status,
+                        created_at, dispatched_at, completed_at
+                    ) VALUES (?, ?, NULL, 'PROFILE_TARGET', 'pending', ?, NULL, NULL)""",
+                    (str(record.post_enforcement_profile_job_id),
+                     str(record.target_id), record.received_at.isoformat()),
+                )
+                connection.execute(
+                    """INSERT INTO enforcement_results (
+                        enforcement_result_id, enforcement_job_id, target_id,
+                        agent_id, control_id, m6_evidence_sha256, outcome,
+                        received_at, result_sha256, payload_json,
+                        post_enforcement_profile_job_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(record.enforcement_result_id), str(record.enforcement_job_id),
+                        str(record.target_id), str(record.agent_id), "7.1.1",
+                        record.payload.m6_evidence_sha256, record.outcome.value,
+                        record.received_at.isoformat(), record.result_sha256,
+                        canonical, str(record.post_enforcement_profile_job_id),
+                    ),
+                )
+                updated = connection.execute(
+                    """UPDATE enforcement_jobs SET status = 'completed', completed_at = ?
+                       WHERE enforcement_job_id = ? AND target_id = ?
+                         AND assigned_agent_id = ? AND status = 'dispatched'""",
+                    (
+                        record.received_at.isoformat(), str(record.enforcement_job_id),
+                        str(record.target_id), str(record.agent_id),
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise StorageConflictError("enforcement job completion changed")
+            except sqlite3.IntegrityError as error:
+                raise StorageConflictError("enforcement result insertion conflicts") from error
+        return record
+
+    def get_enforcement_result_for_job(
+        self, enforcement_job_id: UUID,
+    ) -> EnforcementResultRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM enforcement_results WHERE enforcement_job_id = ?",
+                (str(enforcement_job_id),),
+            ).fetchone()
+            return None if row is None else self._enforcement_result_from_row(connection, row)[0]
+
+    def _post_enforcement_verification_from_row(
+        self, connection: sqlite3.Connection, row: sqlite3.Row,
+    ) -> PostEnforcementVerificationRecord:
+        from src.sandbox_protocol.models import PasswdSourceState
+
+        try:
+            observed_json = row["observed_source_state_json"]
+            observed = (
+                None if observed_json is None
+                else PasswdSourceState.model_validate_json(observed_json, strict=True)
+            )
+            if observed is not None and _canonical_json(observed) != observed_json:
+                raise StorageConflictError("post-enforcement observation is noncanonical")
+            record = PostEnforcementVerificationRecord(
+                enforcement_result_id=_canonical_stored_uuid_text(
+                    row["enforcement_result_id"], "enforcement_result_id",
+                ),
+                target_id=_canonical_stored_uuid_text(row["target_id"], "target_id"),
+                profile_job_id=_canonical_stored_uuid_text(
+                    row["profile_job_id"], "profile_job_id",
+                ),
+                profile_id=_canonical_stored_uuid_text(row["profile_id"], "profile_id"),
+                profile_sha256=row["profile_sha256"],
+                outcome=PostEnforcementVerificationOutcome(row["outcome"]),
+                observed_source_state=observed,
+                verified_at=datetime.fromisoformat(row["verified_at"]),
+            )
+        except StorageConflictError:
+            raise
+        except (TypeError, ValueError, ValidationError, UnicodeError) as error:
+            raise StorageConflictError("post-enforcement verification is malformed") from error
+        result_row = connection.execute(
+            "SELECT * FROM enforcement_results WHERE enforcement_result_id = ?",
+            (str(record.enforcement_result_id),),
+        ).fetchone()
+        profile_row = connection.execute(
+            "SELECT * FROM profiles WHERE profile_id = ?",
+            (str(record.profile_id),),
+        ).fetchone()
+        if result_row is None or profile_row is None:
+            raise StorageConflictError("post-enforcement verification lineage is missing")
+        result = self._enforcement_result_from_row(connection, result_row)[0]
+        profile = self._stored_profile_from_row(profile_row)
+        profile_job_row = connection.execute(
+            "SELECT * FROM jobs WHERE job_id = ?",
+            (str(record.profile_job_id),),
+        ).fetchone()
+        try:
+            expected_observed = observed_passwd_state(profile.profile)
+        except (ValueError, ValidationError):
+            expected_observed = None
+        if (
+            result.target_id != record.target_id
+            or result.post_enforcement_profile_job_id != record.profile_job_id
+            or profile.record.target_id != record.target_id
+            or profile.record.job_id != record.profile_job_id
+            or profile.record.profile_sha256 != record.profile_sha256
+            or profile.record.received_at != record.verified_at
+            or profile_job_row is None
+            or profile_job_row["status"] != JobStatus.COMPLETED.value
+            or profile.profile.collected_at < result.payload.execution_completed_at
+            or expected_observed != record.observed_source_state
+            or post_enforcement_outcome(result.payload, expected_observed)
+            is not record.outcome
+        ):
+            raise StorageConflictError("post-enforcement verification evidence changed")
+        return record
+
+    def get_post_enforcement_verification(
+        self, enforcement_result_id: UUID,
+    ) -> PostEnforcementVerificationRecord | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM post_enforcement_verifications "
+                "WHERE enforcement_result_id = ?",
+                (str(enforcement_result_id),),
+            ).fetchone()
+            return None if row is None else self._post_enforcement_verification_from_row(
+                connection, row,
+            )
 
 
     def get_validation_job(

@@ -24,6 +24,8 @@ from src.agent.config import AgentTransportConfig
 from src.controller.models import (
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementResultRecord,
+    EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     HeartbeatResponse,
     JobPollRequest,
@@ -97,7 +99,8 @@ def _request_payload(
     | HeartbeatRequest
     | JobPollRequest
     | ProfileSubmissionRequest
-    | ValidationResultSubmissionRequest,
+    | ValidationResultSubmissionRequest
+    | EnforcementResultSubmissionRequest,
 ) -> bytes:
     """Serialize one known request, materializing only its required wire secret."""
 
@@ -199,6 +202,16 @@ class AgentHTTPSClient:
             expected_status=200,
         )
 
+    def submit_enforcement_result(
+        self, request: EnforcementResultSubmissionRequest,
+    ) -> EnforcementResultRecord:
+        return self._post(
+            f"agents/{request.auth.agent_id}/enforcement-results",
+            request,
+            EnforcementResultRecord,
+            expected_status=200,
+        )
+
     def _post(
         self,
         path: str,
@@ -206,7 +219,8 @@ class AgentHTTPSClient:
         | HeartbeatRequest
         | JobPollRequest
         | ProfileSubmissionRequest
-        | ValidationResultSubmissionRequest,
+        | ValidationResultSubmissionRequest
+        | EnforcementResultSubmissionRequest,
         response_model: type[_ResponseModel],
         *,
         expected_status: int,

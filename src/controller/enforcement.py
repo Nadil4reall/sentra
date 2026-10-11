@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from uuid import UUID
 
-from src.controller.models import EnforcementJobDelivery, JobStatus, JobType
+from src.controller.models import (
+    EnforcementJobDelivery, EnforcementOutcome, EnforcementResultPayload,
+    JobStatus, JobType, PostEnforcementVerificationOutcome,
+)
+from src.sandbox_protocol.models import PasswdSourceState
 from src.controller.validation import canonical_validation_payload_json
 from src.sandbox_validator.models import ExecutionMode, ValidationDecision
+from src.target_profiler.models import FactStatus, TargetProfile
 
 
 def verify_enforcement_delivery(
@@ -64,4 +70,55 @@ def verify_enforcement_delivery(
     return digest
 
 
-__all__ = ["verify_enforcement_delivery"]
+def canonical_enforcement_payload_json(payload: EnforcementResultPayload) -> str:
+    """Strictly revalidate and serialize exactly the accepted terminal evidence."""
+
+    if type(payload) is not EnforcementResultPayload:
+        raise ValueError("enforcement evidence type is invalid")
+    validated = EnforcementResultPayload.model_validate(
+        payload.model_dump(mode="python"), strict=True,
+    )
+    return json.dumps(
+        validated.model_dump(mode="json"), sort_keys=True,
+        ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+    )
+
+
+def observed_passwd_state(profile: TargetProfile) -> PasswdSourceState | None:
+    """Use only three collected 7.1.1 M3 facts; retain absence as uncertainty."""
+
+    values: dict[str, object] = {}
+    for name in (
+        "passwd_file_mode", "passwd_file_owner_uid", "passwd_file_group_gid",
+    ):
+        fact = profile.facts.get(name)
+        if (
+            fact is None or fact.status is not FactStatus.COLLECTED
+            or "7.1.1" not in fact.requested_by
+        ):
+            return None
+        values[name] = fact.value
+    return PasswdSourceState.model_validate(values, strict=True)
+
+
+def post_enforcement_outcome(
+    payload: EnforcementResultPayload,
+    observed: PasswdSourceState | None,
+) -> PostEnforcementVerificationOutcome:
+    if payload.outcome is not EnforcementOutcome.SUCCEEDED or observed is None:
+        return PostEnforcementVerificationOutcome.OBSERVED_FAILURE_STATE
+    expected_mode = int(payload.expected_source_state.passwd_file_mode, 8) & 0o644
+    if (
+        observed == payload.post_execution_observed_state
+        and observed.passwd_file_owner_uid == 0
+        and observed.passwd_file_group_gid == 0
+        and int(observed.passwd_file_mode, 8) == expected_mode
+    ):
+        return PostEnforcementVerificationOutcome.VERIFIED
+    return PostEnforcementVerificationOutcome.DRIFT_DETECTED
+
+
+__all__ = [
+    "canonical_enforcement_payload_json", "observed_passwd_state",
+    "post_enforcement_outcome", "verify_enforcement_delivery",
+]

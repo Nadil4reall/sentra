@@ -343,7 +343,7 @@ class EnforcementJobCreateRequest(StrictControllerModel):
 
 
 class EnforcementJobRecord(StrictControllerModel):
-    """Controller-owned 7.1.1 authorization, pending or Agent-dispatched only."""
+    """Controller-owned 7.1.1 authorization and immutable attempt lifecycle."""
 
     enforcement_job_id: UUID
     request_id: UUID
@@ -355,11 +355,11 @@ class EnforcementJobRecord(StrictControllerModel):
     job_type: Literal[JobType.ENFORCE_CONTROL] = JobType.ENFORCE_CONTROL
     administrator_enforcement_approval_acknowledged: Literal[True]
     sandbox_evidence_sha256: Sha256Hex
-    status: Literal[JobStatus.PENDING, JobStatus.DISPATCHED] = JobStatus.PENDING
+    status: JobStatus = JobStatus.PENDING
     created_at: AwareDatetime
     assigned_agent_id: UUID | None = None
     dispatched_at: AwareDatetime | None = None
-    completed_at: None = None
+    completed_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def validate_dispatch(self) -> "EnforcementJobRecord":
@@ -367,7 +367,7 @@ class EnforcementJobRecord(StrictControllerModel):
             status=self.status,
             created_at=self.created_at,
             dispatched_at=self.dispatched_at,
-            completed_at=None,
+            completed_at=self.completed_at,
         )
         if (self.status is JobStatus.PENDING) != (self.assigned_agent_id is None):
             raise ValueError("enforcement Agent assignment does not match status")
@@ -736,6 +736,162 @@ class ValidationResultRecord(StrictControllerModel):
         return self
 
 
+class EnforcementOutcome(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    BLOCKED_DRIFT = "BLOCKED_DRIFT"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+    ROLLBACK_FAILED = "ROLLBACK_FAILED"
+
+
+class EnforcementResultPayload(StrictControllerModel):
+    """Allowlisted, metadata-only terminal evidence from the Agent journal."""
+
+    enforcement_job_id: UUID
+    target_id: UUID
+    agent_id: UUID
+    control_id: Literal["7.1.1"]
+    m6_evidence_sha256: Sha256Hex
+    outcome: EnforcementOutcome
+    expected_source_state: PasswdSourceState
+    pre_execution_observed_state: PasswdSourceState | None = None
+    original_rollback_state: PasswdSourceState | None = None
+    post_execution_observed_state: PasswdSourceState | None = None
+    mutation_attempted: bool
+    mutation_changed: bool
+    verification_succeeded: bool
+    rollback_attempted: bool
+    rollback_succeeded: bool | None = None
+    execution_started_at: AwareDatetime | None = None
+    execution_completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_terminal_evidence(self) -> "EnforcementResultPayload":
+        if (
+            self.execution_started_at is not None
+            and self.execution_completed_at < self.execution_started_at
+        ):
+            raise ValueError("enforcement completion precedes execution")
+        if self.mutation_changed and not self.mutation_attempted:
+            raise ValueError("changed metadata requires a mutation attempt")
+        if self.rollback_attempted != (self.rollback_succeeded is not None):
+            raise ValueError("rollback outcome must match rollback attempt")
+        if self.outcome is EnforcementOutcome.SUCCEEDED:
+            if (
+                self.pre_execution_observed_state != self.expected_source_state
+                or self.original_rollback_state != self.expected_source_state
+                or self.post_execution_observed_state is None
+                or self.verification_succeeded is not True
+                or self.rollback_attempted
+                or self.mutation_attempted != self.mutation_changed
+            ):
+                raise ValueError("successful enforcement evidence is inconsistent")
+            post = self.post_execution_observed_state
+            expected_mode = int(self.expected_source_state.passwd_file_mode, 8) & 0o644
+            change_required = (
+                self.expected_source_state.passwd_file_owner_uid != 0
+                or self.expected_source_state.passwd_file_group_gid != 0
+                or int(self.expected_source_state.passwd_file_mode, 8) != expected_mode
+            )
+            if (
+                post.passwd_file_owner_uid != 0
+                or post.passwd_file_group_gid != 0
+                or int(post.passwd_file_mode, 8) != expected_mode
+                or not expected_mode & 0o400
+                or self.mutation_attempted != change_required
+            ):
+                raise ValueError("successful enforcement state is not fixed 7.1.1")
+        elif self.outcome is EnforcementOutcome.BLOCKED_DRIFT:
+            if (
+                self.pre_execution_observed_state is None
+                or self.pre_execution_observed_state == self.expected_source_state
+                or self.mutation_attempted or self.mutation_changed
+                or self.verification_succeeded or self.rollback_attempted
+                or self.post_execution_observed_state is not None
+            ):
+                raise ValueError("drift evidence is inconsistent")
+        elif self.outcome is EnforcementOutcome.FAILED:
+            if (
+                self.mutation_attempted or self.mutation_changed
+                or self.verification_succeeded or self.rollback_attempted
+                or (
+                    self.post_execution_observed_state is not None
+                    and self.post_execution_observed_state
+                    != self.original_rollback_state
+                )
+            ):
+                raise ValueError("pre-mutation failure evidence is inconsistent")
+        elif self.outcome in {
+            EnforcementOutcome.ROLLED_BACK, EnforcementOutcome.ROLLBACK_FAILED,
+        }:
+            if (
+                not self.mutation_attempted or not self.rollback_attempted
+                or self.verification_succeeded
+                or self.original_rollback_state != self.expected_source_state
+                or self.pre_execution_observed_state != self.expected_source_state
+                or self.rollback_succeeded is not (
+                    self.outcome is EnforcementOutcome.ROLLED_BACK
+                )
+            ):
+                raise ValueError("rollback evidence is inconsistent")
+        return self
+
+
+class EnforcementResultSubmissionRequest(StrictControllerModel):
+    auth: AgentAuth
+    payload: EnforcementResultPayload
+
+
+class EnforcementResultRecord(StrictControllerModel):
+    enforcement_result_id: UUID
+    enforcement_job_id: UUID
+    target_id: UUID
+    agent_id: UUID
+    outcome: EnforcementOutcome
+    result_sha256: Sha256Hex
+    received_at: AwareDatetime
+    post_enforcement_profile_job_id: UUID
+    payload: EnforcementResultPayload
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> "EnforcementResultRecord":
+        if (
+            self.enforcement_job_id != self.payload.enforcement_job_id
+            or self.target_id != self.payload.target_id
+            or self.agent_id != self.payload.agent_id
+            or self.outcome is not self.payload.outcome
+            or self.received_at < self.payload.execution_completed_at
+        ):
+            raise ValueError("enforcement result record lineage is inconsistent")
+        return self
+
+
+class PostEnforcementVerificationOutcome(StrEnum):
+    VERIFIED = "VERIFIED"
+    DRIFT_DETECTED = "DRIFT_DETECTED"
+    OBSERVED_FAILURE_STATE = "OBSERVED_FAILURE_STATE"
+
+
+class PostEnforcementVerificationRecord(StrictControllerModel):
+    enforcement_result_id: UUID
+    target_id: UUID
+    profile_job_id: UUID
+    profile_id: UUID
+    profile_sha256: Sha256Hex
+    outcome: PostEnforcementVerificationOutcome
+    observed_source_state: PasswdSourceState | None
+    verified_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_observation(self) -> "PostEnforcementVerificationRecord":
+        if self.outcome in {
+            PostEnforcementVerificationOutcome.VERIFIED,
+            PostEnforcementVerificationOutcome.DRIFT_DETECTED,
+        } and self.observed_source_state is None:
+            raise ValueError("post-enforcement verdict requires collected metadata")
+        return self
+
+
 class TargetRecord(StrictControllerModel):
     target_id: UUID
     agent_id: UUID
@@ -781,6 +937,12 @@ __all__ = [
     "EnforcementJobCreateRequest",
     "EnforcementJobDelivery",
     "EnforcementJobRecord",
+    "EnforcementOutcome",
+    "EnforcementResultPayload",
+    "EnforcementResultSubmissionRequest",
+    "EnforcementResultRecord",
+    "PostEnforcementVerificationOutcome",
+    "PostEnforcementVerificationRecord",
     "HeartbeatRequest",
     "HeartbeatResponse",
     "JobCreateRequest",

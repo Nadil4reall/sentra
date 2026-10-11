@@ -191,6 +191,12 @@ def test_api_namespace_contains_only_narrow_controller_operations() -> None:
         ("POST", "/api/v1/agents/{agent_id}/jobs/poll"),
         ("POST", "/api/v1/agents/{agent_id}/profiles"),
         ("POST", "/api/v1/agents/{agent_id}/validation-results"),
+        ("POST", "/api/v1/agents/{agent_id}/enforcement-results"),
+        ("GET", "/api/v1/admin/enforcement-jobs/{job_id}/result"),
+        (
+            "GET",
+            "/api/v1/admin/enforcement-results/{result_id}/post-verification",
+        ),
         ("GET", "/api/v1/admin/targets"),
         ("POST", "/api/v1/admin/targets/{target_id}/jobs"),
         (
@@ -282,6 +288,9 @@ def test_controller_settings_redact_plain_strings_and_reject_noninteger_limits()
         "get_compatibility_report",
         "create_validation_job",
         "submit_validation_result",
+        "submit_enforcement_result",
+        "get_enforcement_result",
+        "get_post_enforcement_verification",
         "list_validation_results",
         "get_validation_result",
         "create_sandbox_session",

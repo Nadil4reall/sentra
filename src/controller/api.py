@@ -15,6 +15,8 @@ from src.controller.models import (
     CompatibilityReportRecord,
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementResultRecord,
+    EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     HeartbeatResponse,
     JobCreateRequest,
@@ -23,6 +25,7 @@ from src.controller.models import (
     JobRecord,
     ProfileRecord,
     ProfileSubmissionRequest,
+    PostEnforcementVerificationRecord,
     SandboxProvisionRequest,
     SandboxSessionCreateRequest,
     SandboxSessionRecord,
@@ -61,6 +64,19 @@ ENDPOINTS = (
         "POST",
         f"{API_PREFIX}/agents/{{agent_id}}/validation-results",
         "submit_validation_result",
+    ),
+    Endpoint(
+        "POST",
+        f"{API_PREFIX}/agents/{{agent_id}}/enforcement-results",
+        "submit_enforcement_result",
+    ),
+    Endpoint(
+        "GET", f"{API_PREFIX}/admin/enforcement-jobs/{{job_id}}/result",
+        "get_enforcement_result",
+    ),
+    Endpoint(
+        "GET", f"{API_PREFIX}/admin/enforcement-results/{{result_id}}/post-verification",
+        "get_post_enforcement_verification",
     ),
     Endpoint("GET", f"{API_PREFIX}/admin/targets", "list_targets"),
     Endpoint(
@@ -191,6 +207,24 @@ class ControllerAPI:
     ) -> ValidationResultRecord:
         self._require_agent_path_binding(agent_id, request.auth.agent_id)
         return self._service.submit_validation_result(request)
+
+    def submit_enforcement_result(
+        self, agent_id: UUID, request: EnforcementResultSubmissionRequest,
+    ) -> EnforcementResultRecord:
+        self._require_agent_path_binding(agent_id, request.auth.agent_id)
+        return self._service.submit_enforcement_result(request)
+
+    def get_enforcement_result(
+        self, auth: AdminAuth, job_id: UUID,
+    ) -> EnforcementResultRecord:
+        return self._service.get_enforcement_result(auth, job_id)
+
+    def get_post_enforcement_verification(
+        self, auth: AdminAuth, result_id: UUID,
+    ) -> PostEnforcementVerificationRecord | None:
+        return self._service.get_post_enforcement_verification(
+            auth, enforcement_result_id=result_id,
+        )
 
     def list_targets(self, auth: AdminAuth) -> list[TargetRecord]:
         return self._service.list_targets(auth)

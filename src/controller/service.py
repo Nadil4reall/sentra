@@ -35,6 +35,9 @@ from src.controller.models import (
     EnforcementJobCreateRequest,
     EnforcementJobDelivery,
     EnforcementJobRecord,
+    EnforcementResultRecord,
+    EnforcementResultSubmissionRequest,
+    PostEnforcementVerificationRecord,
     EnrollmentRequest,
     EnrollmentResponse,
     HeartbeatRequest,
@@ -76,7 +79,9 @@ from src.controller.validation import (
     require_payload_matches_job,
 )
 from src.controller.sandbox_context import derive_sandbox_context
-from src.controller.enforcement import verify_enforcement_delivery
+from src.controller.enforcement import (
+    canonical_enforcement_payload_json, verify_enforcement_delivery,
+)
 from src.sandbox_validator.models import ExecutionMode, ValidationDecision
 
 
@@ -1189,6 +1194,94 @@ class ControllerService:
             raise ControllerConflictError(
                 "validation result conflicts with Controller state"
             ) from error
+
+    def submit_enforcement_result(
+        self, request: EnforcementResultSubmissionRequest,
+    ) -> EnforcementResultRecord:
+        """Accept one authenticated terminal attempt and queue one fresh M3 job."""
+
+        self._authenticate_agent(request.auth)
+        payload = request.payload
+        try:
+            job = self._repository.get_enforcement_job(payload.enforcement_job_id)
+        except (StorageConflictError, StorageNotFoundError) as error:
+            raise ControllerConflictError("stored enforcement job is invalid") from error
+        if job is None:
+            raise ControllerNotFoundError("enforcement job does not exist")
+        if (
+            job.target_id != request.auth.target_id
+            or job.assigned_agent_id != request.auth.agent_id
+            or payload.target_id != request.auth.target_id
+            or payload.agent_id != request.auth.agent_id
+        ):
+            raise AuthorizationError("enforcement job is not assigned to this Agent")
+        if (
+            job.status not in {JobStatus.DISPATCHED, JobStatus.COMPLETED}
+            or job.control_id != "7.1.1"
+            or payload.control_id != job.control_id
+            or job.sandbox_evidence_sha256 != payload.m6_evidence_sha256
+            or job.administrator_enforcement_approval_acknowledged is not True
+            or job.dispatched_at is None
+            or payload.execution_completed_at < job.dispatched_at
+            or (
+                payload.execution_started_at is not None
+                and payload.execution_started_at < job.dispatched_at
+            )
+        ):
+            raise ControllerConflictError("enforcement result conflicts with authorization")
+        try:
+            canonical = canonical_enforcement_payload_json(payload)
+        except (ValueError, ValidationError) as error:
+            raise ControllerConflictError("enforcement result is malformed") from error
+        received_at = self._now()
+        if received_at < payload.execution_completed_at:
+            raise ControllerConflictError("enforcement result time is in the future")
+        record = EnforcementResultRecord(
+            enforcement_result_id=self._new_id(),
+            enforcement_job_id=job.enforcement_job_id,
+            target_id=job.target_id,
+            agent_id=request.auth.agent_id,
+            outcome=payload.outcome,
+            result_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            received_at=received_at,
+            post_enforcement_profile_job_id=self._new_id(),
+            payload=payload,
+        )
+        try:
+            return self._repository.store_enforcement_result(record, canonical)
+        except StorageNotFoundError as error:
+            raise ControllerNotFoundError("enforcement job does not exist") from error
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "enforcement result conflicts with Controller state"
+            ) from error
+
+    def get_post_enforcement_verification(
+        self, auth: AdminAuth, *, enforcement_result_id: UUID,
+    ) -> PostEnforcementVerificationRecord | None:
+        self._authenticate_admin(auth)
+        try:
+            return self._repository.get_post_enforcement_verification(
+                enforcement_result_id,
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored post-enforcement verification is invalid"
+            ) from error
+
+    def get_enforcement_result(
+        self, auth: AdminAuth, job_id: UUID,
+    ) -> EnforcementResultRecord:
+        self._authenticate_admin(auth)
+        try:
+            result = self._repository.get_enforcement_result_for_job(job_id)
+        except StorageConflictError as error:
+            raise ControllerConflictError(
+                "stored enforcement result is invalid"
+            ) from error
+        if result is None:
+            raise ControllerNotFoundError("enforcement result does not exist")
+        return result
 
     def list_validation_results(
         self,

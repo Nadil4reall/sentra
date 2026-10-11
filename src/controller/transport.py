@@ -36,6 +36,7 @@ from src.controller.models import (
     CompatibilityAnalysisRequest,
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     JobCreateRequest,
     JobPollRequest,
@@ -65,7 +66,13 @@ from src.controller.storage import SQLiteControllerRepository
 
 _AGENT_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/agents/([^/]+)/"
-    r"(heartbeat|jobs/poll|profiles|validation-results)$"
+    r"(heartbeat|jobs/poll|profiles|validation-results|enforcement-results)$"
+)
+_ADMIN_ENFORCEMENT_RESULT_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/enforcement-jobs/([^/]+)/result$"
+)
+_ADMIN_POST_ENFORCEMENT_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/enforcement-results/([^/]+)/post-verification$"
 )
 _ADMIN_JOB_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/jobs$"
@@ -263,12 +270,42 @@ class ControllerHTTPSApplication:
                 elif operation == "profiles":
                     request = ProfileSubmissionRequest.model_validate_json(body)
                     response = self._api.submit_profile(agent_id, request)
-                else:
+                elif operation == "validation-results":
                     request = ValidationResultSubmissionRequest.model_validate_json(
                         body
                     )
                     response = self._api.submit_validation_result(agent_id, request)
+                else:
+                    request = EnforcementResultSubmissionRequest.model_validate_json(
+                        body
+                    )
+                    response = self._api.submit_enforcement_result(agent_id, request)
                 return _json_response(HTTPStatus.OK, _model_payload(response))
+
+            enforcement_result_match = _ADMIN_ENFORCEMENT_RESULT_ROUTE.fullmatch(path)
+            if enforcement_result_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                auth = self._admin_auth(normalized_headers)
+                result = self._api.get_enforcement_result(
+                    auth, UUID(enforcement_result_match.group(1)),
+                )
+                return _json_response(HTTPStatus.OK, _model_payload(result))
+
+            post_enforcement_match = _ADMIN_POST_ENFORCEMENT_ROUTE.fullmatch(path)
+            if post_enforcement_match is not None:
+                if method != "GET":
+                    return self._method_not_allowed()
+                auth = self._admin_auth(normalized_headers)
+                verification = self._api.get_post_enforcement_verification(
+                    auth, UUID(post_enforcement_match.group(1)),
+                )
+                if verification is None:
+                    return _error_response(
+                        HTTPStatus.NOT_FOUND, "not_found",
+                        "post-enforcement verification does not exist",
+                    )
+                return _json_response(HTTPStatus.OK, _model_payload(verification))
 
             if path == f"{API_PREFIX}/admin/targets":
                 if method != "GET":

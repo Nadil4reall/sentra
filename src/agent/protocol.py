@@ -16,6 +16,8 @@ from src.controller.models import (
     AgentAuth,
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementResultPayload,
+    EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     JobPollRequest,
     ObservedTargetMetadata,
@@ -133,6 +135,20 @@ class AgentProtocol:
             auth=self._auth(),
             payload=payload,
         )
+
+    def create_enforcement_result_submission_request(
+        self, payload: EnforcementResultPayload,
+    ) -> EnforcementResultSubmissionRequest:
+        state = self._state
+        if (
+            state.target_id is None or state.agent_id is None
+            or payload.target_id != state.target_id
+            or payload.agent_id != state.agent_id
+        ):
+            raise AgentNotEnrolledError(
+                "enforcement result identity does not match this Agent"
+            )
+        return EnforcementResultSubmissionRequest(auth=self._auth(), payload=payload)
 
     def _auth(self) -> AgentAuth:
         state = self._state

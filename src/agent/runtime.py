@@ -11,6 +11,9 @@ from pydantic import SecretStr
 from src.agent.profiler import TargetProfilerAdapter
 from src.agent import enforcement as enforcement_preflight
 from src.agent import enforcement_execute
+from src.agent.enforcement_result import (
+    payload_from_trusted_journal, payload_from_verified_delivery,
+)
 from src.agent.enforcement_journal import (
     EnforcementJournalStore,
     EnforcementPreflightOutcome,
@@ -27,6 +30,8 @@ from src.controller.models import (
     EnrollmentRequest,
     EnrollmentResponse,
     EnforcementJobDelivery,
+    EnforcementResultRecord,
+    EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     HeartbeatResponse,
     JobPollRequest,
@@ -62,6 +67,10 @@ class AgentControllerTransport(Protocol):
     def submit_validation_result(
         self, request: ValidationResultSubmissionRequest
     ) -> ValidationResultRecord: ...
+
+    def submit_enforcement_result(
+        self, request: EnforcementResultSubmissionRequest,
+    ) -> EnforcementResultRecord: ...
 
 
 @dataclass(frozen=True)
@@ -114,6 +123,7 @@ class AgentRuntime:
         enforcement_journal: EnforcementJournalStore | None = None,
         sandbox_validation_acknowledged: bool = False,
         retry_interrupted_enforcement: bool = False,
+        enforcement_result_submission_enabled: bool = False,
     ) -> None:
         self._protocol = protocol
         self._transport = transport
@@ -128,6 +138,27 @@ class AgentRuntime:
             sandbox_validation_acknowledged
         )
         self._retry_interrupted_enforcement = retry_interrupted_enforcement
+        self._enforcement_result_submission_enabled = enforcement_result_submission_enabled
+
+    def _submit_enforcement_entry(
+        self, entry, *, target_id: UUID, agent_id: UUID,
+        delivery: EnforcementJobDelivery | None = None,
+    ) -> None:
+        journal = self._enforcement_journal
+        if journal is None:
+            raise AgentRuntimeError("enforcement journal is not configured")
+        payload = (
+            payload_from_verified_delivery(
+                delivery, entry, target_id=target_id, agent_id=agent_id,
+            )
+            if delivery is not None else
+            payload_from_trusted_journal(
+                entry, target_id=target_id, agent_id=agent_id,
+            )
+        )
+        request = self._protocol.create_enforcement_result_submission_request(payload)
+        record = self._transport.submit_enforcement_result(request)
+        journal.acknowledge_result(entry, record)
 
     @staticmethod
     def _preflight_jobs(
@@ -205,6 +236,16 @@ class AgentRuntime:
         state = self._protocol.state
         if state.target_id is None or state.agent_id is None:
             raise AgentRuntimeError("Agent identity is incomplete after enrollment")
+        if self._enforcement_result_submission_enabled:
+            journal = self._enforcement_journal
+            if journal is None:
+                raise AgentRuntimeError("enforcement journal is not configured")
+            for entry in journal.pending_results(
+                target_id=state.target_id, agent_id=state.agent_id,
+            ):
+                self._submit_enforcement_entry(
+                    entry, target_id=state.target_id, agent_id=state.agent_id,
+                )
         self._preflight_jobs(
             polled.jobs, target_id=state.target_id, agent_id=state.agent_id,
         )
@@ -249,11 +290,23 @@ class AgentRuntime:
                         locked.prepare(
                             observed, EnforcementPreflightOutcome(outcome),
                         )
-                    enforcement_execute.execute_prepared_enforcement(
+                    terminal_entry = enforcement_execute.execute_prepared_enforcement(
                         job, locked,
                         retry_interrupted=self._retry_interrupted_enforcement,
                     )
-                continue  # M7-C stops locally; no Controller completion.
+                if (
+                    self._enforcement_result_submission_enabled
+                    and terminal_entry.outcome.value in {
+                        "SUCCEEDED", "BLOCKED_DRIFT", "FAILED",
+                        "ROLLED_BACK", "ROLLBACK_FAILED",
+                    }
+                    and terminal_entry.acknowledged_at is None
+                ):
+                    self._submit_enforcement_entry(
+                        terminal_entry, target_id=state.target_id,
+                        agent_id=state.agent_id, delivery=job,
+                    )
+                continue  # M7-D submits evidence; no further mutation in this cycle.
 
             validator = self._control_validator
             journal = self._validation_journal
