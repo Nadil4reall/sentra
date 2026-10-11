@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · SENTRA</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sentra.css') }}">
+</head>
+<body>
+  {% if current_user %}
+  <header class="site-header">
+    <div class="brand"><a href="{{ url_for('dashboard') }}">SENTRA</a><span>Security Control Assessment &amp; Enforcement</span></div>
+    <div class="user-tools"><span>{{ current_user.username }} · {{ current_user.roles|join(', ') }}</span>
+      <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="quiet" type="submit">Sign out</button></form>
+    </div>
+  </header>
+  <div class="app-shell">
+    <nav aria-label="Primary" class="sidebar">
+      <a href="{{ url_for('dashboard') }}">Overview</a>
+      <a href="{{ url_for('targets') }}">Targets</a>
+      <a href="{{ url_for('controls') }}">Controls &amp; assessments</a>
+      <a href="{{ url_for('compatibility') }}">Compatibility</a>
+      <a href="{{ url_for('sandboxes') }}">Sandbox validation</a>
+      <a href="{{ url_for('deployments') }}">Controlled enforcement</a>
+      <a href="{{ url_for('evidence') }}">Evidence</a>
+      <a href="{{ url_for('audit') }}">Audit trail</a>
+    </nav>
+    <main id="content" class="content">
+  {% else %}
+  <main id="content" class="login-shell">
+  {% endif %}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<div class="notice {{ category }}" role="status">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  {% if current_user %}</div>{% endif %}
+</body>
+</html>

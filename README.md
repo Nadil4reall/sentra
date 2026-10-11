@@ -23,8 +23,8 @@ M6D adds only constrained sandbox validation, and M6E-C adds host-side sandbox
 infrastructure rather than production deployment or generic execution. The scoped
 M6B, M6C, M6D, and M6E-C workflows have completed their recorded real-lab validations.
 The later fixed `7.1.1` M6 sandbox-to-M7 controlled-enforcement slice is present
-in this repository. M8 adds a database foundation over the existing Controller
-SQLite file; no dashboard or production-readiness claim follows from it.
+in this repository. M8 adds a database foundation and a server-rendered research
+interface over the existing Controller SQLite file; this is not production readiness.
 
 ## The research story
 
@@ -53,7 +53,7 @@ M6E-C Can SENTRA create and destroy the real sandbox itself?  REAL LIBVIRT VALID
                 ↓
 M7  Can a separately approved fixed 7.1.1 change be enforced and reprofiled?
                 ↓
-M8  Can one Controller database preserve the full workflow history? DATABASE FOUNDATION
+M8  Can one Controller database present bounded workflow history? DATABASE + WEB PoC
 ```
 
 ## Project status
@@ -73,10 +73,11 @@ M8  Can one Controller database preserve the full workflow history? DATABASE FOU
 | M6E-B — provider orchestration | Sealed `local_nested_vm` plan, deterministic provider identity, reconciliation, and fail-closed storage boundaries | ✅ Implemented and automated-test validated |
 | M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system`; fixed `org.sentra.validation.0` channel normalization | ✅ Real Controller lifecycle and fixed-channel validation complete; guest consumer/validation not yet connected |
 | M7 — controlled enforcement | Fixed 7.1.1 target job, durable result, fresh M3 reprofile and verification | ✅ Implemented at scoped PoC level; not production-ready |
-| M8 — database foundation | Additive migration, benchmark/assessment/user/approval/evidence/audit tables linked to existing M1–M7 Controller storage | ✅ Implemented; dashboard and API integration not built |
+| M8 — database and product interface | Additive migration plus authenticated Flask/Jinja views of existing M1–M7 evidence and limited M8 request/approval forms | ✅ Research PoC implemented; M7 remains the sole enforcement path |
 
 Database schema, initialization, integrity checks, and remaining boundaries are in
-[docs/M8_DATABASE.md](docs/M8_DATABASE.md).
+[docs/M8_DATABASE.md](docs/M8_DATABASE.md); web authentication, pages and trust
+boundaries are in [docs/M8_WEB.md](docs/M8_WEB.md).
 
 ### Verified results at a glance
 
@@ -663,14 +664,14 @@ remain future work.
 
 ### Not implemented
 
-- broader M5 control coverage and automated sandbox lifecycle management;
+- broader M5 control coverage and production-grade sandbox lifecycle management;
 - arbitrary CIS Audit or Remediation execution;
-- automatic deployment or post-deployment verification;
+- unrestricted automatic deployment beyond the fixed, approved M7 slice;
 - production certificate lifecycle automation and broader M6 deployment validation;
-- broader Controller-side validation orchestration, automated sandbox creation,
-  cloning, snapshotting, and disposal;
+- broader Controller-side validation orchestration, appliance lifecycle policy,
+  cloning, and snapshotting beyond the fixed M6 sandbox slice;
 - production database or deployment workflow; and
-- dashboard or other user interface.
+- a production-hardened dashboard or public web service.
 
 ### Limitations
 

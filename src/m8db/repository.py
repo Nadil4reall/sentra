@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,7 @@ _ASSESSMENT_STATES = frozenset({
 })
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_.:-]{0,95}$")
 _RELATED_LOOKUPS = {
+    "user": "SELECT NULL AS target_id, NULL AS authoritative_sha FROM m8_users WHERE user_id = ?",
     "benchmark": "SELECT NULL AS target_id, NULL AS authoritative_sha FROM m8_benchmarks WHERE benchmark_id = ?",
     "target": "SELECT target_id, NULL AS authoritative_sha FROM targets WHERE target_id = ?",
     "agent": "SELECT target_id, NULL AS authoritative_sha FROM agents WHERE agent_id = ?",
@@ -100,6 +102,22 @@ def _require_related(
             and row["authoritative_sha"] != sha256:
         raise M8DataError("evidence hash differs from authoritative source")
     return identifier
+
+
+def _audit_user_action(
+    connection: sqlite3.Connection, *, user_id: str, event_type: str,
+    related_type: str, related_id: str, outcome: str, reason_code: str,
+    target_id: str | None = None, control_id: str | None = None,
+) -> None:
+    """Append a nonsecret event in the caller's transaction."""
+    connection.execute(
+        """INSERT INTO m8_audit_events (
+            event_id, occurred_at, actor_type, actor_user_id, event_type,
+            target_id, control_id, related_type, related_id, outcome, reason
+        ) VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (_uuid(uuid4()), _now(), user_id, event_type, target_id, control_id,
+         related_type, related_id, outcome, reason_code),
+    )
 
 
 class M8Repository:
@@ -187,8 +205,11 @@ class M8Repository:
 
     def create_user(
         self, *, username: str, password: str, user_id: UUID | None = None,
+        role_name: str | None = None,
     ) -> dict[str, object]:
         username = _text(username, field="username", limit=128)
+        if role_name is not None and role_name not in {"admin", "viewer"}:
+            raise M8DataError("role is unsupported")
         if not isinstance(password, str) or len(password) < 12:
             raise M8DataError("password must have at least 12 characters")
         salt = os.urandom(16)
@@ -202,6 +223,11 @@ class M8Repository:
                 "created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
                 (identifier, username, encoded, now, now),
             )
+            if role_name is not None:
+                connection.execute(
+                    "INSERT INTO m8_user_roles (user_id, role_name) VALUES (?, ?)",
+                    (identifier, role_name),
+                )
         return {"user_id": identifier, "username": username, "active": True}
 
     def assign_role(self, *, user_id: UUID | str, role_name: str) -> None:
@@ -212,6 +238,65 @@ class M8Repository:
                 "INSERT INTO m8_user_roles (user_id, role_name) VALUES (?, ?)",
                 (_uuid(user_id), role_name),
             )
+
+    def get_user_for_session(self, user_id: UUID | str) -> dict[str, object] | None:
+        """Resolve current active state and roles without returning a password hash."""
+        with open_db(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT user_id, username, active FROM m8_users WHERE user_id = ?",
+                (_uuid(user_id),),
+            ).fetchone()
+            if row is None or row["active"] != 1:
+                return None
+            roles = frozenset(item[0] for item in connection.execute(
+                "SELECT role_name FROM m8_user_roles WHERE user_id = ?",
+                (row["user_id"],),
+            ))
+            return {"user_id": row["user_id"], "username": row["username"],
+                    "roles": roles}
+
+    def authenticate_user(self, *, username: str, password: str) -> dict[str, object] | None:
+        """Verify the existing salted scrypt format; fail closed on damaged rows."""
+        if not isinstance(username, str) or not isinstance(password, str) \
+                or not username or len(username) > 128 or len(password) > 4096:
+            return None
+        with open_db(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT user_id, username, password_hash, active FROM m8_users "
+                "WHERE username = ? COLLATE NOCASE", (username,),
+            ).fetchone()
+            encoded = row["password_hash"] if row is not None else ""
+            try:
+                scheme, n, r, p, salt_hex, digest_hex = encoded.split("$")
+                if (scheme, n, r, p) != ("scrypt", "16384", "8", "1"):
+                    raise ValueError("unsupported password hash")
+                salt = bytes.fromhex(salt_hex)
+                expected = bytes.fromhex(digest_hex)
+                if len(salt) != 16 or len(expected) != 64:
+                    raise ValueError("damaged password hash")
+            except (AttributeError, TypeError, ValueError):
+                salt, expected = bytes(16), bytes(64)
+            actual = hashlib.scrypt(password.encode("utf-8"), salt=salt,
+                                    n=2**14, r=8, p=1)
+            if row is None or row["active"] != 1 or not hmac.compare_digest(actual, expected):
+                return None
+            roles = frozenset(item[0] for item in connection.execute(
+                "SELECT role_name FROM m8_user_roles WHERE user_id = ?",
+                (row["user_id"],),
+            ))
+            if not roles:
+                return None
+            connection.execute(
+                "UPDATE m8_users SET last_login_at = ? WHERE user_id = ? AND active = 1",
+                (_now(), row["user_id"]),
+            )
+            _audit_user_action(
+                connection, user_id=row["user_id"], event_type="login_succeeded",
+                related_type="user", related_id=row["user_id"],
+                outcome="accepted", reason_code="password_verified",
+            )
+            return {"user_id": row["user_id"], "username": row["username"],
+                    "roles": roles}
 
     def get_target(self, target_id: UUID | str):
         return self.controller.get_target(UUID(_uuid(target_id)))
@@ -375,11 +460,21 @@ class M8Repository:
     def create_deployment_request(
         self, *, assessment_result_id: UUID | str,
         sandbox_session_id: UUID | str, deployment_id: UUID | None = None,
+        requested_by_user_id: UUID | str | None = None,
     ) -> dict[str, object]:
         """Record an administrative proposal, never initiate M7 execution."""
 
         result_id, session_id = map(_uuid, (assessment_result_id, sandbox_session_id))
         with open_db(self.database_path) as connection:
+            if requested_by_user_id is not None:
+                actor_id = _uuid(requested_by_user_id)
+                actor = connection.execute(
+                    "SELECT 1 FROM m8_users u JOIN m8_user_roles r ON r.user_id = u.user_id "
+                    "WHERE u.user_id = ? AND u.active = 1 AND r.role_name = 'admin'",
+                    (actor_id,),
+                ).fetchone()
+                if actor is None:
+                    raise M8DataError("active administrator required")
             linked = connection.execute(
                 """SELECT r.target_id, r.control_id, a.profile_id,
                           l.compatibility_report_id
@@ -426,6 +521,13 @@ class M8Repository:
                 ) VALUES (?, ?, ?, '7.1.1', ?, 'awaiting_approval', ?, ?)""",
                 (identifier, result_id, linked["target_id"], session_id, now, now),
             )
+            if requested_by_user_id is not None:
+                _audit_user_action(
+                    connection, user_id=actor_id, event_type="deployment_requested",
+                    related_type="deployment", related_id=identifier,
+                    target_id=linked["target_id"], control_id="7.1.1",
+                    outcome="recorded", reason_code="validated_sandbox_evidence",
+                )
             return _row(connection.execute(
                 "SELECT * FROM m8_deployment_requests WHERE deployment_id = ?",
                 (identifier,),
@@ -485,6 +587,14 @@ class M8Repository:
             )
             if changed.rowcount != 1:
                 raise M8DataError("approval state changed concurrently")
+            _audit_user_action(
+                connection, user_id=_uuid(user_id),
+                event_type="deployment_approved" if decision == "approved"
+                else "deployment_rejected", related_type="approval",
+                related_id=identifier, target_id=request["target_id"],
+                control_id=request["control_id"], outcome=decision,
+                reason_code="administrator_decision",
+            )
             return _row(connection.execute(
                 "SELECT * FROM m8_approvals WHERE approval_id = ?", (identifier,),
             ).fetchone())
@@ -645,7 +755,9 @@ class M8Repository:
                     raise M8DataError("M3 profile evidence changed")
             validations = rows(
                 "SELECT x.sandbox_session_id, x.validation_job_id, x.status, "
-                "x.result_sha256, x.completed_at FROM sandbox_validation_executions x "
+                "x.result_sha256, x.completed_at, "
+                "json_extract(x.payload_json, '$.report.control_results[0].result') "
+                "AS validation_result FROM sandbox_validation_executions x "
                 "JOIN sandbox_sessions s ON s.sandbox_session_id = x.sandbox_session_id "
                 "WHERE s.source_target_id = ? AND s.control_id = ? ORDER BY x.completed_at",
                 (target, control_id),

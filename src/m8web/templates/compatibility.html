@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">Controller M4 evidence</div><h1>Compatibility decisions</h1><p>These are compatibility and dependency assessments, not CIS PASS/FAIL or target safety verdicts.</p></div></div>
+<section class="panel">{% if decisions %}<div class="table-wrap"><table><thead><tr><th>Control</th><th>Decision</th><th>Target / lineage</th><th>Review</th><th>Report hash</th><th>Generated</th></tr></thead><tbody>{% for r in decisions %}<tr><td>{{ r.control_id }}</td><td><span class="badge">{{ r.decision }}</span></td><td><a href="{{ url_for('target_control', target_id=r.target_id, control_id=r.control_id) }}">{{ r.target_id }}</a><small>Profile {{ r.profile_id }}</small><small>Report {{ r.compatibility_report_id }}</small></td><td>{{ r.metadata_review_status }}{% if r.provisional %} · provisional{% endif %}</td><td class="hash">{{ r.report_sha256 }}</td><td>{{ r.generated_at }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">No M4 report has been stored.</p>{% endif %}</section>
+{% endblock %}

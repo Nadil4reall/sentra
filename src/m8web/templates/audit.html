@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">Read-only projection</div><h1>Operational timeline</h1><p>Controller and Agent events come from their authoritative records. Only actual M8 user actions are attributed to a username; the M8 user-action audit remains append-only.</p></div></div>
+<section class="panel">{% if events %}<div class="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Event</th><th>Outcome</th><th>Reason</th><th>Related object</th><th>Target / control</th></tr></thead><tbody>{% for e in events %}<tr><td>{{ e.occurred_at }}</td><td>{% if e.actor_name %}{{ e.actor_name }}{% elif e.actor_type == 'agent' %}Agent{% else %}System/Controller{% endif %}</td><td>{{ e.event_type|replace('_',' ') }}<small>{{ e.source }}</small></td><td><span class="badge">{{ e.outcome }}</span></td><td>{{ e.reason or '—' }}</td><td>{{ e.related_type }}<small>{{ e.related_id }}</small></td><td>{{ e.target_id or '—' }} · {{ e.control_id or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">No operational event is recorded.</p>{% endif %}</section>
+{% endblock %}

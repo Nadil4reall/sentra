@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">Immutable references</div><h1>Evidence index</h1><p>References and authoritative digests, not binary artifacts or secret payloads.</p></div></div>
+<section class="panel">{% if evidence %}<div class="table-wrap"><table><thead><tr><th>Evidence</th><th>Producer / type</th><th>Related source</th><th>Target / control</th><th>Reference</th><th>SHA-256</th></tr></thead><tbody>{% for e in evidence %}<tr><td>{{ e.evidence_id }}<small>{{ e.created_at }}</small></td><td>{{ e.producer }} · {{ e.evidence_type }}</td><td>{{ e.related_type }}<small>{{ e.related_id }}</small></td><td>{{ e.target_id or '—' }} · {{ e.control_id or '—' }}</td><td>{{ e.storage_reference }}</td><td class="hash">{{ e.sha256 or 'Not recorded' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">No M8 evidence reference has been recorded. Existing Controller evidence remains in its authoritative tables.</p>{% endif %}</section>
+{% endblock %}

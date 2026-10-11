@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-card">
+  <div class="eyebrow">SENTRA · Research prototype</div>
+  <h1>Sign in to SENTRA</h1>
+  <p class="muted">Inspect selected-control evidence and manage bounded deployment requests.</p>
+  <form method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" required maxlength="128">
+    <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

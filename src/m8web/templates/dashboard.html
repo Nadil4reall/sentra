@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">Selected-control research scope</div><h1>Overview</h1><p>Operational records from the canonical Controller database. No compliance score is inferred from compatibility decisions.</p></div></div>
+<section class="metric-grid" aria-label="Workflow counts">
+  {% for label, key in [('Enrolled targets','targets'),('M3 profiles','profiles'),('Assessments','assessments'),('M4 review decisions','m4_review_decisions'),('Validated sandbox results','validated_sandboxes'),('Pending requests','pending_requests'),('Successful M7 results','successful_m7_results'),('Fresh verified outcomes','verified_outcomes')] %}
+  <article class="metric"><span>{{ label }}</span><strong>{{ snapshot.counts[key] }}</strong></article>
+  {% endfor %}
+</section>
+<section class="panel"><div class="section-head"><h2>Recent activity</h2><a href="{{ url_for('audit') }}">Operational timeline</a></div>
+  {% if snapshot.activity %}<div class="table-wrap"><table><thead><tr><th>When</th><th>Event</th><th>State</th><th>Target</th></tr></thead><tbody>
+  {% for item in snapshot.activity %}<tr><td>{{ item.at }}</td><td>{{ item.label|replace('_',' ') }}</td><td><span class="badge">{{ item.outcome }}</span></td><td>{% if item.target_id %}<a href="{{ url_for('target_detail', target_id=item.target_id) }}">{{ item.target_id }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>{% else %}<p class="empty">No operational activity has been recorded yet.</p>{% endif %}
+</section>
+<p class="disclaimer">Review and provisional states are preserved per control and are not converted into compliance verdicts. A sandbox result is not a target-compliance verdict.</p>
+{% endblock %}

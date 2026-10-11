@@ -11,7 +11,13 @@ from .config import M8WebSettings
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the SENTRA M8 web foundation"
+        description="Run the SENTRA M8 research web interface"
+    )
+
+    parser.add_argument(
+        "--secret-key-file",
+        required=True,
+        help="Absolute path to a current-user-owned mode-0600 file containing 32–256 random bytes",
     )
 
     parser.add_argument(
@@ -32,11 +38,22 @@ def main() -> int:
         default=8080,
         help="Development port (default: 8080)",
     )
+    parser.add_argument(
+        "--insecure-cookie-for-local-http",
+        action="store_true",
+        help="Permit non-Secure cookies only for 127.0.0.1/localhost development HTTP",
+    )
 
     args = parser.parse_args()
+    if args.listen_host not in {
+        "127.0.0.1", "localhost", "::1",
+    }:
+        parser.error("the development server may bind only to loopback")
 
     settings = M8WebSettings(
         database=Path(args.database).expanduser(),
+        secret_key_file=Path(args.secret_key_file).expanduser(),
+        secure_cookie=not args.insecure_cookie_for_local_http,
     )
 
     app = create_app(settings)

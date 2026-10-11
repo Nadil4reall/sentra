@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from urllib.parse import quote
 
 from src.m8db.migrations import check_db
@@ -35,7 +37,8 @@ _COUNT_TABLES = (
 )
 
 
-def _open_read_only(database: Path) -> sqlite3.Connection:
+@contextmanager
+def _open_read_only(database: Path) -> Iterator[sqlite3.Connection]:
     encoded = quote(str(database), safe="/")
     uri = f"file:{encoded}?mode=ro"
 
@@ -48,7 +51,10 @@ def _open_read_only(database: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA query_only = ON")
     connection.execute("PRAGMA foreign_keys = ON")
 
-    return connection
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def database_health(database: Path) -> dict[str, object]:

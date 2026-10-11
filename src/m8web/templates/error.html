@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">SENTRA</div><h1>Request unavailable</h1><p>Code {{ code }}. The requested operation could not be completed. No sensitive diagnostic is shown here.</p><a href="{{ url_for('dashboard') if current_user else url_for('login') }}">Return to {{ 'overview' if current_user else 'sign in' }}</a></div></div>
+{% endblock %}

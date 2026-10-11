@@ -52,7 +52,7 @@ Migration [`001_core.sql`](../src/m8db/sql/001_core.sql) adds:
 - `m8_benchmarks`, `m8_controls`: versioned CIS identity and selected metadata;
   one active benchmark per platform, not one benchmark for all time. CIS-derived
   fields remain separate from SENTRA adapter/review metadata.
-- `m8_users`, `m8_roles`, `m8_user_roles`: future login schema. The repository
+- `m8_users`, `m8_roles`, `m8_user_roles`: web login schema. The repository
   hashes new passwords with salted `scrypt`; plaintext is never persisted.
 - `m8_assessments`, `m8_assessment_results`: historical run and per-control
   assertions linked by foreign keys to a real Controller target/profile and a
@@ -124,13 +124,15 @@ restart. This migration does not delete legacy data.
 
 ## Current boundaries
 
-M8 contains only the database foundation. It does not implement a dashboard,
-web authentication, CIS PASS/FAIL evaluator, automatic benchmark importer,
+This document describes the database foundation; the additive
+[M8 web interface](M8_WEB.md) now provides login and bounded history pages.
+Neither layer implements a CIS PASS/FAIL evaluator, automatic benchmark importer,
 or an alternate target execution path. Existing M7 jobs can predate M8 users;
 their historical administrator acknowledgement cannot be retroactively assigned
 to a named M8 user. M8 audit-event storage is available and append-only, but
 historical M1–M7 operations are not backfilled or automatically claimed as
-user-attributed M8 events. Future API integration must append events at the
-actual service transaction boundary and retain the existing M7 approval gate.
+user-attributed M8 events. The M8 web request/decision methods append user
+events in their M8 transaction; future Controller API integration must append
+events at the actual service boundary and retain the existing M7 approval gate.
 SQLite remains a PoC backend; local file replacement or a privileged DBA can
 defeat in-database append-only triggers, so backups and host permissions matter.
