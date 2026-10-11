@@ -29,3 +29,7 @@ data/controller/*
 !data/controller/.gitkeep
 data/agent/*
 !data/agent/.gitkeep
+
+# Preserve locally generated M8 scratch databases; production M8 uses the
+# Controller --database path, not a second data/m8 database.
+data/m8/*

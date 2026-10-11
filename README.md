@@ -22,8 +22,9 @@ approval gates. M6B/M6C add no remediation or arbitrary remote-command capabilit
 M6D adds only constrained sandbox validation, and M6E-C adds host-side sandbox
 infrastructure rather than production deployment or generic execution. The scoped
 M6B, M6C, M6D, and M6E-C workflows have completed their recorded real-lab validations.
-Guest-level automatic validation inside the M6E-C-created sandbox remains later M6E
-work, so this does not imply production readiness or completion of all M6 work.
+The later fixed `7.1.1` M6 sandbox-to-M7 controlled-enforcement slice is present
+in this repository. M8 adds a database foundation over the existing Controller
+SQLite file; no dashboard or production-readiness claim follows from it.
 
 ## The research story
 
@@ -49,6 +50,10 @@ M6D Can it authorize one constrained sandbox validation?     7.1.1 LAB VALIDATED
 M6E-A/B How is an automatic sandbox lifecycle safely bounded? LIFECYCLE/PROVIDER CORE
                 ↓
 M6E-C Can SENTRA create and destroy the real sandbox itself?  REAL LIBVIRT VALIDATED
+                ↓
+M7  Can a separately approved fixed 7.1.1 change be enforced and reprofiled?
+                ↓
+M8  Can one Controller database preserve the full workflow history? DATABASE FOUNDATION
 ```
 
 ## Project status
@@ -67,7 +72,11 @@ M6E-C Can SENTRA create and destroy the real sandbox itself?  REAL LIBVIRT VALID
 | M6E-A — sandbox lifecycle core | Sandbox session model, persistence, administration API, lineage, and explicit state machine | ✅ Implemented and automated-test validated |
 | M6E-B — provider orchestration | Sealed `local_nested_vm` plan, deterministic provider identity, reconciliation, and fail-closed storage boundaries | ✅ Implemented and automated-test validated |
 | M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system`; fixed `org.sentra.validation.0` channel normalization | ✅ Real Controller lifecycle and fixed-channel validation complete; guest consumer/validation not yet connected |
-| Later M6E / M7–M8 | Automatic validation inside created sandbox, approval/deployment boundaries, re-verification, dashboard/audit workflow | Planned |
+| M7 — controlled enforcement | Fixed 7.1.1 target job, durable result, fresh M3 reprofile and verification | ✅ Implemented at scoped PoC level; not production-ready |
+| M8 — database foundation | Additive migration, benchmark/assessment/user/approval/evidence/audit tables linked to existing M1–M7 Controller storage | ✅ Implemented; dashboard and API integration not built |
+
+Database schema, initialization, integrity checks, and remaining boundaries are in
+[docs/M8_DATABASE.md](docs/M8_DATABASE.md).
 
 ### Verified results at a glance
 
