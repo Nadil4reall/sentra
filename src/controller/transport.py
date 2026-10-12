@@ -36,12 +36,14 @@ from src.controller.models import (
     CompatibilityAnalysisRequest,
     EnrollmentRequest,
     EnrollmentResponse,
+    EnforcementJobCreateRequest,
     EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     JobCreateRequest,
     JobPollRequest,
     ProfileSubmissionRequest,
     SandboxProvisionRequest,
+    SandboxCloseRequest,
     SandboxSessionCreateRequest,
     ValidationJobCreateRequest,
     ValidationResultSubmissionRequest,
@@ -100,6 +102,17 @@ _ADMIN_SANDBOX_SESSION_ITEM_ROUTE = re.compile(
 _ADMIN_SANDBOX_PROVISION_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
     r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)/provision$"
+)
+_ADMIN_SANDBOX_VALIDATE_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)/validate$"
+)
+_ADMIN_SANDBOX_CLOSE_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
+    r"compatibility-reports/([^/]+)/sandbox-sessions/([^/]+)/close$"
+)
+_ADMIN_ENFORCEMENT_CREATE_ROUTE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/enforcement-jobs$"
 )
 _ADMIN_VALIDATION_RESULT_COLLECTION_ROUTE = re.compile(
     rf"^{re.escape(API_PREFIX)}/admin/targets/([^/]+)/profiles/([^/]+)/"
@@ -313,6 +326,37 @@ class ControllerHTTPSApplication:
                 auth = self._admin_auth(normalized_headers)
                 targets = self._api.list_targets(auth)
                 return _json_response(HTTPStatus.OK, _list_payload(targets))
+
+            enforcement_create_match = _ADMIN_ENFORCEMENT_CREATE_ROUTE.fullmatch(path)
+            if enforcement_create_match is not None:
+                if method != "POST":
+                    return self._method_not_allowed()
+                auth = self._admin_auth(normalized_headers)
+                request = EnforcementJobCreateRequest.model_validate_json(body)
+                job = self._api.create_enforcement_job(
+                    UUID(enforcement_create_match.group(1)), auth, request,
+                )
+                return _json_response(HTTPStatus.CREATED, _model_payload(job))
+
+            sandbox_validate_match = _ADMIN_SANDBOX_VALIDATE_ROUTE.fullmatch(path)
+            if sandbox_validate_match is not None:
+                if method != "POST":
+                    return self._method_not_allowed()
+                auth = self._admin_auth(normalized_headers)
+                request = ValidationJobCreateRequest.model_validate_json(body)
+                ids = tuple(UUID(sandbox_validate_match.group(i)) for i in range(1, 5))
+                result = self._api.execute_sandbox_validation(*ids, auth, request)
+                return _json_response(HTTPStatus.OK, _model_payload(result))
+
+            sandbox_close_match = _ADMIN_SANDBOX_CLOSE_ROUTE.fullmatch(path)
+            if sandbox_close_match is not None:
+                if method != "POST":
+                    return self._method_not_allowed()
+                auth = self._admin_auth(normalized_headers)
+                request = SandboxCloseRequest.model_validate_json(body)
+                ids = tuple(UUID(sandbox_close_match.group(i)) for i in range(1, 5))
+                session = self._api.close_completed_sandbox(*ids, auth, request)
+                return _json_response(HTTPStatus.OK, _model_payload(session))
 
             validation_result_item_match = (
                 _ADMIN_VALIDATION_RESULT_ITEM_ROUTE.fullmatch(path)

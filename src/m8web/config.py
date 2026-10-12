@@ -6,10 +6,23 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import stat
+from urllib.parse import urlsplit
 
 
 class M8WebConfigurationError(ValueError):
     """Raised when the M8 web runtime configuration is unsafe or invalid."""
+
+
+def _require_trusted_parent(path: Path, label: str) -> None:
+    current = Path(path.anchor)
+    for part in path.parent.parts[1:]:
+        current /= part
+        try:
+            item = os.lstat(current)
+        except OSError as error:
+            raise M8WebConfigurationError(f"{label} parent is unavailable") from error
+        if not stat.S_ISDIR(item.st_mode) or stat.S_IMODE(item.st_mode) & 0o022:
+            raise M8WebConfigurationError(f"{label} parent is unsafe")
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +32,9 @@ class M8WebSettings:
     database: Path
     secret_key_file: Path | None = None
     secure_cookie: bool = True
+    controller_url: str | None = None
+    controller_ca_file: Path | None = None
+    controller_admin_credential_file: Path | None = None
     secret_key: bytes = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -47,6 +63,40 @@ class M8WebSettings:
             )
 
         object.__setattr__(self, "database", database)
+        controller_values = (
+            self.controller_url, self.controller_ca_file,
+            self.controller_admin_credential_file,
+        )
+        if any(value is not None for value in controller_values):
+            if any(value is None for value in controller_values):
+                raise M8WebConfigurationError("Controller HTTPS configuration is incomplete")
+            url = urlsplit(self.controller_url)
+            if (url.scheme != "https" or not url.hostname or url.username
+                    or url.password or url.path not in {"", "/"}
+                    or url.query or url.fragment or url.port is None):
+                raise M8WebConfigurationError("Controller URL must be an HTTPS origin")
+            ca_path = Path(self.controller_ca_file).expanduser()
+            credential_path = Path(self.controller_admin_credential_file).expanduser()
+            for path, label in ((ca_path, "Controller CA"),
+                                (credential_path, "Controller admin credential")):
+                if not path.is_absolute() or path.is_symlink() or not path.is_file():
+                    raise M8WebConfigurationError(f"{label} must be an absolute regular file")
+                _require_trusted_parent(path, label)
+                item = os.stat(path, follow_symlinks=False)
+                if (item.st_uid not in {0, os.geteuid()}
+                        or stat.S_IMODE(item.st_mode) & 0o022
+                        or item.st_nlink != 1):
+                    raise M8WebConfigurationError(f"{label} file is unsafe")
+            credential_stat = os.stat(credential_path, follow_symlinks=False)
+            if (credential_stat.st_uid != os.geteuid()
+                    or stat.S_IMODE(credential_stat.st_mode) != 0o600
+                    or credential_stat.st_nlink != 1):
+                raise M8WebConfigurationError(
+                    "Controller admin credential must be owned, mode 0600"
+                )
+            object.__setattr__(self, "controller_url", self.controller_url.rstrip("/"))
+            object.__setattr__(self, "controller_ca_file", ca_path)
+            object.__setattr__(self, "controller_admin_credential_file", credential_path)
         if self.secret_key_file is None:
             # Tests and embedded one-process use get a fresh, nonpersistent key.
             # The CLI requires an explicit protected file for stable sessions.
@@ -55,15 +105,7 @@ class M8WebSettings:
         secret_path = Path(self.secret_key_file).expanduser()
         if not secret_path.is_absolute():
             raise M8WebConfigurationError("secret key file path must be absolute")
-        current = Path(secret_path.anchor)
-        for part in secret_path.parent.parts[1:]:
-            current /= part
-            try:
-                item = os.lstat(current)
-            except OSError as error:
-                raise M8WebConfigurationError("secret key parent is unavailable") from error
-            if not stat.S_ISDIR(item.st_mode) or stat.S_IMODE(item.st_mode) & 0o022:
-                raise M8WebConfigurationError("secret key parent is unsafe")
+        _require_trusted_parent(secret_path, "secret key")
         try:
             item = os.lstat(secret_path)
         except OSError as error:

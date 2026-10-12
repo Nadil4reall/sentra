@@ -120,6 +120,18 @@ def _audit_user_action(
     )
 
 
+def _require_active_admin(connection: sqlite3.Connection, user_id: UUID | str) -> str:
+    identifier = _uuid(user_id)
+    row = connection.execute(
+        "SELECT 1 FROM m8_users u JOIN m8_user_roles r ON r.user_id=u.user_id "
+        "WHERE u.user_id=? AND u.active=1 AND r.role_name='admin'",
+        (identifier,),
+    ).fetchone()
+    if row is None:
+        raise M8DataError("active administrator required")
+    return identifier
+
+
 class M8Repository:
     """Additive persistence; operational truth remains in Controller storage."""
 
@@ -150,6 +162,75 @@ class M8Repository:
                 "SELECT * FROM m8_benchmarks WHERE benchmark_id = ?", (identifier,),
             ).fetchone())
 
+    def import_supported_benchmark(
+        self, *, source_sha256: str, controls: list[dict[str, object]],
+        imported_by_user_id: UUID | str,
+    ) -> dict[str, object]:
+        """Atomically catalogue only M1-extracted/M2-selected PoC controls.
+
+        Identity checking and M1 conversion happen before this call. An existing
+        identical import is returned without duplicating rows or audit events.
+        """
+        if not re.fullmatch(r"[0-9a-f]{64}", source_sha256) or len(controls) != 10:
+            raise M8DataError("supported benchmark import is invalid")
+        expected_ids = {
+            "1.1.1.1", "1.1.1.6", "3.3.1", "4.2.1", "4.2.3",
+            "5.1.19", "5.1.20", "6.2.1.2", "7.1.1", "7.1.5",
+        }
+        if {item.get("control_id") for item in controls} != expected_ids:
+            raise M8DataError("supported control selection is incomplete")
+        actor_id = _uuid(imported_by_user_id)
+        benchmark_id = _uuid(uuid4())
+        identity = "CIS Ubuntu Linux 24.04 LTS Benchmark v1.0.0"
+        with open_db(self.database_path) as connection:
+            _require_active_admin(connection, actor_id)
+            existing = connection.execute(
+                "SELECT * FROM m8_benchmarks WHERE identity=? AND version='v1.0.0' "
+                "AND platform='Ubuntu 24.04 LTS'", (identity,),
+            ).fetchone()
+            if existing is not None:
+                if existing["source_reference"] != f"sha256:{source_sha256}":
+                    raise M8DataError("supported benchmark was imported from another source")
+                return dict(existing)
+            connection.execute(
+                "INSERT INTO m8_benchmarks (benchmark_id,identity,version,platform,"
+                "source_reference,imported_at) VALUES (?,?,'v1.0.0',?,?,?)",
+                (benchmark_id, identity, "Ubuntu 24.04 LTS",
+                 f"sha256:{source_sha256}", _now()),
+            )
+            for item in controls:
+                facts = item["required_facts"]
+                if not isinstance(facts, list) or not facts or not all(
+                    isinstance(name, str) and name for name in facts
+                ) or len(facts) != len(set(facts)):
+                    raise M8DataError("control required facts are invalid")
+                if item["review_state"] not in {"needs_review", "reviewed"}:
+                    raise M8DataError("control review state is invalid")
+                connection.execute(
+                    """INSERT INTO m8_controls (
+                        benchmark_id,control_id,title,description,profile_level,
+                        assessment_type,selected,review_state,required_facts_json,
+                        adapter_capability,metadata_json
+                    ) VALUES (?,?,?,?,?,?,1,?,?,?,?)""",
+                    (benchmark_id, item["control_id"],
+                     _text(item["title"], field="title"),
+                     _text(item["description"], field="description", limit=8192)
+                     if item["description"] else "",
+                     _text(item["profile_level"], field="profile level", limit=512)
+                     if item["profile_level"] else "",
+                     item["assessment_type"], item["review_state"],
+                     _json(facts), item["adapter_capability"],
+                     _json(item["metadata"])),
+                )
+            _audit_user_action(
+                connection, user_id=actor_id, event_type="benchmark_imported",
+                related_type="benchmark", related_id=benchmark_id,
+                outcome="accepted", reason_code="supported_pdf_identity_validated",
+            )
+            return dict(connection.execute(
+                "SELECT * FROM m8_benchmarks WHERE benchmark_id=?", (benchmark_id,),
+            ).fetchone())
+
     def get_benchmark(self, benchmark_id: UUID | str) -> dict[str, object] | None:
         with open_db(self.database_path) as connection:
             return _row(connection.execute(
@@ -157,7 +238,9 @@ class M8Repository:
                 (_uuid(benchmark_id),),
             ).fetchone())
 
-    def activate_benchmark(self, benchmark_id: UUID | str) -> None:
+    def activate_benchmark(
+        self, benchmark_id: UUID | str, *, activated_by_user_id: UUID | str | None = None,
+    ) -> None:
         identifier = _uuid(benchmark_id)
         with open_db(self.database_path) as connection:
             item = connection.execute(
@@ -165,6 +248,8 @@ class M8Repository:
             ).fetchone()
             if item is None:
                 raise M8DataError("benchmark does not exist")
+            if activated_by_user_id is not None:
+                _require_active_admin(connection, activated_by_user_id)
             connection.execute(
                 "UPDATE m8_benchmarks SET active = 0 WHERE platform = ?",
                 (item["platform"],),
@@ -172,6 +257,41 @@ class M8Repository:
             connection.execute(
                 "UPDATE m8_benchmarks SET active = 1 WHERE benchmark_id = ?",
                 (identifier,),
+            )
+            if activated_by_user_id is not None:
+                _audit_user_action(
+                    connection, user_id=_uuid(activated_by_user_id),
+                    event_type="benchmark_activated", related_type="benchmark",
+                    related_id=identifier, outcome="accepted",
+                    reason_code="administrator_selection",
+                )
+
+    def set_control_selected(
+        self, *, benchmark_id: UUID | str, control_id: str,
+        selected: bool, user_id: UUID | str,
+    ) -> None:
+        if type(selected) is not bool:
+            raise M8DataError("control selection must be boolean")
+        identifier = _uuid(benchmark_id)
+        with open_db(self.database_path) as connection:
+            control = connection.execute(
+                "SELECT 1 FROM m8_controls c JOIN m8_benchmarks b "
+                "ON b.benchmark_id=c.benchmark_id WHERE c.benchmark_id=? "
+                "AND c.control_id=? AND b.active=1",
+                (identifier, control_id),
+            ).fetchone()
+            if control is None:
+                raise M8DataError("active benchmark control does not exist")
+            _require_active_admin(connection, user_id)
+            connection.execute(
+                "UPDATE m8_controls SET selected=? WHERE benchmark_id=? AND control_id=?",
+                (int(selected), identifier, control_id),
+            )
+            _audit_user_action(
+                connection, user_id=_uuid(user_id),
+                event_type="control_selection_changed", related_type="benchmark",
+                related_id=identifier, outcome="selected" if selected else "deselected",
+                reason_code="administrator_selection", control_id=control_id,
             )
 
     def create_control(
@@ -457,6 +577,120 @@ class M8Repository:
                  _uuid(compatibility_report_id), _now()),
             )
 
+    def record_compatibility_assessment(
+        self, *, target_id: UUID | str, profile_id: UUID | str,
+        benchmark_id: UUID | str, compatibility_report_id: UUID | str,
+        initiated_by_user_id: UUID | str,
+    ) -> dict[str, object]:
+        """Group a fresh M3/M4 run without fabricating CIS PASS/FAIL evidence."""
+        target, profile, benchmark, report_id = map(
+            _uuid, (target_id, profile_id, benchmark_id, compatibility_report_id),
+        )
+        report = self.controller.get_compatibility_report(
+            target_id=UUID(target), profile_id=UUID(profile),
+            compatibility_report_id=UUID(report_id),
+        )
+        if report is None:
+            raise M8DataError("stored M4 report does not exist")
+        report_controls = {item.control_id for item in report.report.control_results}
+        with open_db(self.database_path) as connection:
+            _require_active_admin(connection, initiated_by_user_id)
+            row = connection.execute(
+                "SELECT identity,version,active FROM m8_benchmarks WHERE benchmark_id=?",
+                (benchmark,),
+            ).fetchone()
+            if row is None or row["active"] != 1 or (
+                row["identity"] != report.benchmark_identity
+                or row["version"] != report.benchmark_version
+            ):
+                raise M8DataError("active benchmark differs from M4 report")
+            selected = [item[0] for item in connection.execute(
+                "SELECT control_id FROM m8_controls WHERE benchmark_id=? AND selected=1",
+                (benchmark,),
+            )]
+            if not selected or not set(selected) <= report_controls:
+                raise M8DataError("selected controls are not covered by M4")
+            identifier, now = _uuid(uuid4()), _now()
+            connection.execute(
+                "INSERT INTO m8_assessments (assessment_id,target_id,profile_id,"
+                "benchmark_id,state,created_at,started_at,completed_at) "
+                "VALUES (?,?,?,?,'completed',?,?,?)",
+                (identifier, target, profile, benchmark, now, now, now),
+            )
+            for control_id in selected:
+                connection.execute(
+                    """INSERT INTO m8_assessment_results (
+                        assessment_result_id,assessment_id,target_id,benchmark_id,
+                        control_id,state,reason,observed_facts_json,observed_at
+                    ) VALUES (?,?,?,?,?,'not_tested',?, '{}',?)""",
+                    (_uuid(uuid4()), identifier, target, benchmark, control_id,
+                     "M4 compatibility is not a CIS audit or compliance verdict", now),
+                )
+            connection.execute(
+                """INSERT INTO m8_assessment_report_links (
+                    assessment_id,target_id,profile_id,benchmark_id,
+                    compatibility_report_id,linked_at
+                ) VALUES (?,?,?,?,?,?)""",
+                (identifier, target, profile, benchmark, report_id, now),
+            )
+            _audit_user_action(
+                connection, user_id=_uuid(initiated_by_user_id),
+                event_type="compatibility_analysis_requested",
+                related_type="assessment", related_id=identifier,
+                target_id=target, outcome="completed",
+                reason_code="controller_m4_report_linked",
+            )
+            return dict(connection.execute(
+                "SELECT * FROM m8_assessments WHERE assessment_id=?", (identifier,),
+            ).fetchone())
+
+    def approved_deployment_lineage(
+        self, deployment_id: UUID | str,
+    ) -> dict[str, object]:
+        """Return only an approved, unlinked proposal with unchanged M6 evidence."""
+        with open_db(self.database_path) as connection:
+            row = connection.execute(
+                """SELECT d.*, a.profile_id, l.compatibility_report_id,
+                          p.validation_evidence_sha256
+                   FROM m8_deployment_requests d
+                   JOIN m8_assessment_results r
+                     ON r.assessment_result_id=d.assessment_result_id
+                   JOIN m8_assessments a ON a.assessment_id=r.assessment_id
+                   JOIN m8_assessment_report_links l ON l.assessment_id=a.assessment_id
+                   JOIN m8_approvals p ON p.deployment_id=d.deployment_id
+                   WHERE d.deployment_id=? AND p.decision='approved'""",
+                (_uuid(deployment_id),),
+            ).fetchone()
+            if row is None or row["state"] != "approved" or row["enforcement_job_id"]:
+                raise M8DataError("deployment is not awaiting controlled execution")
+            evidence = self.controller.get_sandbox_validation_evidence(
+                sandbox_session_id=UUID(row["sandbox_session_id"]),
+            )
+            sandbox = self.controller.get_sandbox_session(
+                target_id=UUID(row["target_id"]),
+                profile_id=UUID(row["profile_id"]),
+                compatibility_report_id=UUID(row["compatibility_report_id"]),
+                sandbox_session_id=UUID(row["sandbox_session_id"]),
+            )
+            if (evidence is None or sandbox is None
+                    or evidence[1] != row["validation_evidence_sha256"]
+                    or sandbox.status is not SandboxSessionStatus.CLOSED
+                    or sandbox.failure_reason is not None
+                    or sandbox.quarantine_reason is not None):
+                raise M8DataError("reviewed sandbox evidence changed")
+            payload = evidence[0]
+            if (payload.target_id != UUID(row["target_id"])
+                    or payload.profile_id != UUID(row["profile_id"])
+                    or payload.compatibility_report_id != UUID(row["compatibility_report_id"])
+                    or payload.control_id != "7.1.1"
+                    or payload.execution_mode is not ExecutionMode.EXECUTE
+                    or payload.report.mode is not ExecutionMode.EXECUTE
+                    or len(payload.report.control_results) != 1
+                    or payload.report.control_results[0].result
+                    is not ValidationDecision.VALIDATED):
+                raise M8DataError("reviewed sandbox result is not validated")
+            return dict(row)
+
     def create_deployment_request(
         self, *, assessment_result_id: UUID | str,
         sandbox_session_id: UUID | str, deployment_id: UUID | None = None,
@@ -601,6 +835,7 @@ class M8Repository:
 
     def link_enforcement_job(
         self, *, deployment_id: UUID | str, enforcement_job_id: UUID | str,
+        initiated_by_user_id: UUID | str | None = None,
     ) -> None:
         """Only attach a separately authorized, Controller-created M7 job."""
 
@@ -642,6 +877,15 @@ class M8Repository:
             )
             if changed.rowcount != 1:
                 raise M8DataError("deployment was already linked")
+            if initiated_by_user_id is not None:
+                _audit_user_action(
+                    connection, user_id=_uuid(initiated_by_user_id),
+                    event_type="controlled_deployment_started",
+                    related_type="deployment", related_id=_uuid(deployment_id),
+                    target_id=request["target_id"], control_id=request["control_id"],
+                    outcome="controller_job_created",
+                    reason_code="m7_gate_accepted",
+                )
 
     def create_evidence(
         self, *, evidence_type: str, producer: str, related_type: str,

@@ -38,8 +38,9 @@ secret file outside the repository and Git. Production
 deployment requires HTTPS and a production WSGI/server
 configuration, not Flask's built-in development server.
 
-`viewer` can read pages. `admin` can submit a narrowly scoped M8 deployment
-request and record an approval or rejection. Every state-changing web form is
+`viewer` can read pages. `admin` can import the one supported benchmark,
+select controls, initiate bounded Controller operations, submit a narrowly
+scoped M8 deployment request, and record an approval or rejection. Every state-changing web form is
 POST-only, authenticated, role-checked and CSRF-checked. Extra form fields are
 rejected. Meaningful successful user actions are appended to the existing M8
 audit table in the same transaction as the M8 change; successful logout is
@@ -54,6 +55,8 @@ invented or backfilled.
 |---|---|
 | `/login`, `/logout` | Session sign-in and POST-only sign-out |
 | `/` | Live workflow counts and real recent activity |
+| `/runs` | Guided hardening run, projected from authoritative rows; no shadow state machine |
+| `/benchmarks` | Supported-PDF import status and active benchmark selection |
 | `/targets`, `/targets/<id>` | Enrollment metadata, historical M3 profiles and target history |
 | `/targets/<id>/controls/<control>` | Profile → assessment → M4 → M6 → M7 → fresh verification lineage |
 | `/controls` | Selected catalogue and explicitly recorded assessments/results |
@@ -62,6 +65,28 @@ invented or backfilled.
 | `/deployments` | M8 requests/reviewer username, ID and reason plus authoritative M7 outcomes |
 | `/evidence`, `/audit` | M8 evidence references; unified read-only operational timeline including append-only M8 user actions |
 | `/health`, `/api/status` | Existing bounded public health/status endpoints |
+
+The wizard uses the existing Controller `PROFILE_TARGET` and M4 analysis
+operations. Its M6 create/provision/validate/close calls remain in the running
+Controller: the new fixed validation route derives the context from validated
+Controller-stored M3/M4 lineage and calls the existing full M6 transaction with
+the Controller's configured provider. The new M7 route calls the existing
+`ControllerService.create_enforcement_job` gate. The web process has no
+libvirt provider and never writes authoritative M3–M7 workflow tables.
+
+M1 PDF import first checks a bounded readable PDF for independent cover/version/
+date and target-technology text markers, then records its SHA-256. This is a
+supported-scope text check, **not publisher authentication**. The upload's
+filename is ignored; M1 conversion occurs in an isolated temporary directory.
+Only the ten existing M2-selected control IDs and their non-command metadata
+are imported atomically. Raw CIS Audit and Remediation text is neither executed
+nor copied into M8. Selected controls may be changed on the Controls page, but
+the existing M4 engine still evaluates its fixed ten-control PoC scope.
+
+The M8 assessment group created after a fresh M3 profile and M4 report records
+selected controls as `not_tested`, because M4 compatibility is not a CIS audit.
+M7 Agent execution and fresh post-enforcement profiling remain asynchronous;
+the wizard reads their authoritative outcomes rather than synthesizing a result.
 
 Lists are bounded and do not expose raw profile JSON, M6 payloads or password
 hashes. Empty pages show explicit empty states rather than fake data. Older M7
@@ -74,12 +99,13 @@ assessment result is linked to the exact M4 report/profile and a closed sandbox
 has validated M6 `EXECUTE` evidence. The repository revalidates that lineage;
 the UI's eligible list is a convenience, not an authorization source. An admin
 decision records a historical M8 approval/rejection and the reviewed M6 evidence
-fingerprint. The approved request then remains **awaiting separate Controller
-action**. M8 deliberately does not instantiate the Controller service with an
-admin credential, create an `ENFORCE_CONTROL` job, dispatch to the Agent, or mark
-verification. M7 must independently enforce its own new administrator
-acknowledgement, exact lineage and sandbox evidence gate. Agent execution and
-fresh `PROFILE_TARGET` verification remain entirely within M7.
+fingerprint. The approved request then remains **awaiting a separate explicit
+Start Controlled Deployment action**. That action sends the exact reviewed
+lineage and a new administrator acknowledgement to the authenticated Controller
+M7 route. It does not write `enforcement_jobs` directly. The Controller's M7
+service independently rechecks closed validated evidence. Rejection blocks the
+action; an approved request alone creates zero jobs. Agent execution and fresh
+`PROFILE_TARGET` verification remain entirely within M7.
 
 ## Local development smoke test
 
@@ -96,6 +122,16 @@ openssl rand -out /absolute/protected/path/m8-web.secret 32
 ./.venv/bin/python -m src.m8web --database /absolute/path/controller.sqlite3 --secret-key-file /absolute/protected/path/m8-web.secret --listen-host 127.0.0.1 --listen-port 8080 --insecure-cookie-for-local-http
 ```
 
+For operational buttons, additionally configure `--controller-url
+https://controller.example:8443`, `--controller-ca-file /absolute/protected/ca.pem`
+and `--controller-admin-credential-file /absolute/protected/controller-admin.secret`.
+These three settings are all-or-none. The admin credential stays server-side in
+a current-user-owned mode-0600 file under trusted ancestry; the client enforces
+CA-backed certificate and hostname verification and refuses redirects. Without
+this configuration, evidence pages remain readable but Controller actions fail
+closed. The Agent's existing `src.agent` CLI performs enrollment from the host;
+the browser never receives a bootstrap credential or installs software remotely.
+
 The admin creation command requires an absolute path to an existing, regular,
 healthy M8 Controller database before it prompts for a password. It never
 accepts the password on the command line. For an HTTPS deployment, omit
@@ -106,8 +142,10 @@ accepts the password on the command line. For an HTTPS deployment, omit
 
 SQLite remains a single-host research backend. There is no MFA, login rate
 limiting, distributed session store, production TLS/proxy/certificate lifecycle,
-UI-driven benchmark import or assessment computation, automatic M7 handoff, or
-full M1–M7 audit backfill. Historical operational events are projected on read
+automatic host onboarding, automatic M7 execution, or full M1–M7 audit backfill.
+Benchmark validation checks text identity and hash, not a publisher signature.
+M1 conversion is synchronous and limited to the selected ten-control research
+scope. Historical operational events are projected on read
 from their source rows, with Controller/Agent actor labels rather than invented
 usernames. The M8 user-action audit is append-only under normal application
 operations but a privileged database administrator can alter the file. The web

@@ -34,6 +34,8 @@ from src.controller.models import (
     SandboxProviderType,
     SandboxSessionRecord,
     SandboxSessionStatus,
+    SandboxValidationRunRecord,
+    ValidationJobCreateRequest,
 )
 from src.controller.service import (
     ControllerConflictError,
@@ -2781,6 +2783,77 @@ class SandboxManager:
             ):
                 return current
             raise
+
+    def execute_validation(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+        request: ValidationJobCreateRequest,
+    ) -> SandboxValidationRunRecord:
+        """Invoke only the existing fixed M6 transaction on this Controller's provider."""
+        from src.controller.sandbox_m5 import (
+            SandboxM5ControllerError,
+            run_controller_owned_sandbox_validation,
+        )
+
+        if self._provider is None:
+            raise ControllerConflictError("sandbox provider is unavailable")
+        session = self._get(
+            auth, target_id=target_id, profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id,
+        )
+        if (request.target_id != target_id or request.profile_id != profile_id
+                or request.compatibility_report_id != compatibility_report_id
+                or request.control_id != session.control_id):
+            raise ControllerConflictError("sandbox validation lineage is invalid")
+        replay = self._service.replay_completed_sandbox_validation(auth, session, request)
+        if replay is not None:
+            return replay
+        manifest = self._service.derive_sandbox_validation_context(auth, session)
+        try:
+            payload, completed = run_controller_owned_sandbox_validation(
+                self._service, self._provider, auth,
+                session=session, request=request, manifest=manifest,
+            )
+        except SandboxM5ControllerError as error:
+            raise ControllerConflictError("sandbox validation failed") from error
+        return SandboxValidationRunRecord(
+            sandbox_session_id=completed.sandbox_session_id,
+            validation_job_id=payload.validation_job_id,
+            status=completed.status,
+        )
+
+    def close_completed(
+        self,
+        auth: AdminAuth,
+        *,
+        target_id: UUID,
+        profile_id: UUID,
+        compatibility_report_id: UUID,
+        sandbox_session_id: UUID,
+    ) -> SandboxSessionRecord:
+        """Destroy the fixed disposable VM before recording a closed session."""
+        if self._provider is None:
+            raise ControllerConflictError("sandbox provider is unavailable")
+        session = self._get(
+            auth, target_id=target_id, profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id,
+        )
+        if session.status is SandboxSessionStatus.CLOSED:
+            return session
+        if session.status is not SandboxSessionStatus.COMPLETED:
+            raise ControllerConflictError("sandbox validation has not completed")
+        try:
+            self._provider.destroy(sandbox_session_id)
+        except Exception as error:
+            raise ControllerConflictError("sandbox cleanup failed") from error
+        return self._service.close_session(sandbox_session_id)
 
 
 __all__ = [

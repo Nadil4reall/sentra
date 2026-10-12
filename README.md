@@ -24,7 +24,8 @@ infrastructure rather than production deployment or generic execution. The scope
 M6B, M6C, M6D, and M6E-C workflows have completed their recorded real-lab validations.
 The later fixed `7.1.1` M6 sandbox-to-M7 controlled-enforcement slice is present
 in this repository. M8 adds a database foundation and a server-rendered research
-interface over the existing Controller SQLite file; this is not production readiness.
+interface with a supported-benchmark import and guided, authenticated Controller
+operations over the existing SQLite file; this is not production readiness.
 
 ## The research story
 
@@ -73,7 +74,7 @@ M8  Can one Controller database present bounded workflow history? DATABASE + WEB
 | M6E-B — provider orchestration | Sealed `local_nested_vm` plan, deterministic provider identity, reconciliation, and fail-closed storage boundaries | ✅ Implemented and automated-test validated |
 | M6E-C — real libvirt integration | Automatic pool, qcow2 overlay, domain start/inspect/replay/destroy using `qemu:///system`; fixed `org.sentra.validation.0` channel normalization | ✅ Real Controller lifecycle and fixed-channel validation complete; guest consumer/validation not yet connected |
 | M7 — controlled enforcement | Fixed 7.1.1 target job, durable result, fresh M3 reprofile and verification | ✅ Implemented at scoped PoC level; not production-ready |
-| M8 — database and product interface | Additive migration plus authenticated Flask/Jinja views of existing M1–M7 evidence and limited M8 request/approval forms | ✅ Research PoC implemented; M7 remains the sole enforcement path |
+| M8 — database and product interface | Additive migration, authenticated evidence views, a supported-benchmark import and guided Controller-backed hardening run | ✅ Research PoC implemented; M7 remains the sole enforcement path |
 
 Database schema, initialization, integrity checks, and remaining boundaries are in
 [docs/M8_DATABASE.md](docs/M8_DATABASE.md); web authentication, pages and trust

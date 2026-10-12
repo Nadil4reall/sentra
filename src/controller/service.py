@@ -55,6 +55,7 @@ from src.controller.models import (
     SandboxSessionCreateRequest,
     SandboxSessionRecord,
     SandboxSessionStatus,
+    SandboxValidationRunRecord,
     TargetRecord,
     ValidationJobCreateRequest,
     ValidationJobRecord,
@@ -690,6 +691,85 @@ class ControllerService:
         if session is None:
             raise ControllerNotFoundError("sandbox session does not exist")
         return session
+
+    def derive_sandbox_validation_context(
+        self, auth: AdminAuth, session: SandboxSessionRecord,
+    ):
+        """Derive the fixed guest context from validated Controller M3/M4 rows."""
+        from src.controller.sandbox_context import derive_sandbox_context
+
+        current = self.get_sandbox_session(
+            auth,
+            target_id=session.source_target_id,
+            profile_id=session.source_profile_id,
+            compatibility_report_id=session.source_compatibility_report_id,
+            sandbox_session_id=session.sandbox_session_id,
+        )
+        if current != session:
+            raise ControllerConflictError("sandbox session changed")
+        try:
+            stored = self._repository.get_stored_profile(session.source_profile_id)
+        except StorageConflictError as error:
+            raise ControllerConflictError("stored profile evidence is invalid") from error
+        if stored is None or stored.record.target_id != session.source_target_id:
+            raise ControllerConflictError("sandbox source profile is unavailable")
+        try:
+            return derive_sandbox_context(
+                session.control_id, stored.profile, session.compatibility_reference,
+            )
+        except ValueError as error:
+            raise ControllerConflictError("sandbox source context is invalid") from error
+
+    def replay_completed_sandbox_validation(
+        self, auth: AdminAuth, session: SandboxSessionRecord,
+        request: ValidationJobCreateRequest,
+    ) -> SandboxValidationRunRecord | None:
+        """Return a completed exact-request M6 result after a lost HTTPS response."""
+        self._authenticate_admin(auth)
+        if session.status not in {
+            SandboxSessionStatus.COMPLETED, SandboxSessionStatus.CLOSED,
+        }:
+            return None
+        if session.failure_reason is not None or session.quarantine_reason is not None:
+            raise ControllerConflictError("sandbox validation replay is invalid")
+        try:
+            evidence = self._repository.get_sandbox_validation_evidence(
+                sandbox_session_id=session.sandbox_session_id,
+            )
+            stored = None if evidence is None else self._repository.get_validation_job(
+                evidence[0].validation_job_id
+            )
+        except StorageConflictError as error:
+            raise ControllerConflictError("sandbox validation replay is invalid") from error
+        if evidence is None or stored is None:
+            raise ControllerConflictError("sandbox validation replay evidence is missing")
+        payload = evidence[0]
+        job = stored.job
+        if (
+            job.status is not JobStatus.PENDING
+            or stored.assigned_agent_id is not None
+            or job.validation_job_id != payload.validation_job_id
+            or job.request_id != request.request_id
+            or job.target_id != request.target_id
+            or job.profile_id != request.profile_id
+            or job.compatibility_report_id != request.compatibility_report_id
+            or job.control_id != request.control_id
+            or job.administrator_approval_acknowledged
+               != request.administrator_approval_acknowledged
+            or job.compatibility_risk_acknowledged
+               != request.compatibility_risk_acknowledged
+            or job.compatibility_override_reason != request.compatibility_override_reason
+            or payload.target_id != session.source_target_id
+            or payload.profile_id != session.source_profile_id
+            or payload.compatibility_report_id
+               != session.source_compatibility_report_id
+        ):
+            raise ControllerConflictError("sandbox validation replay differs")
+        return SandboxValidationRunRecord(
+            sandbox_session_id=session.sandbox_session_id,
+            validation_job_id=job.validation_job_id,
+            status=session.status,
+        )
 
     def _get_internal_sandbox_session(
         self,

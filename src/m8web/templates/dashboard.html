@@ -2,7 +2,7 @@
 {% from "_ui.html" import badge, empty_state, workflow, timeline %}
 {% block content %}
 <section class="overview-hero">
-  <div class="hero-main"><span class="hero-kicker"><span class="live-dot" aria-hidden="true"></span> SENTRA · Research operations</span><h1>Security<br>Overview<span class="hero-period">.</span></h1><p>From the first host profile to fresh post-enforcement verification, every stage retains its own evidence and decision boundary.</p><a class="hero-link" href="{{ url_for('targets') }}">Explore targets <span aria-hidden="true">↗</span></a></div>
+  <div class="hero-main"><span class="hero-kicker"><span class="live-dot" aria-hidden="true"></span> SENTRA · Research operations</span><h1>Security<br>Overview<span class="hero-period">.</span></h1><p>From the first host profile to fresh post-enforcement verification, every stage retains its own evidence and decision boundary.</p><a class="hero-link" href="{{ url_for('hardening_run') }}">Start Hardening Run <span aria-hidden="true">↗</span></a>{% if snapshot.focus and active_benchmark %}<p><a class="text-link" href="{{ url_for('hardening_run', target_id=snapshot.focus.target_id, benchmark_id=active_benchmark.benchmark_id) }}">Continue Hardening Run</a></p>{% endif %}</div>
   <div class="hero-aside"><span class="hero-aside-label">Data source</span><strong>Canonical Controller database</strong><span>Read at {{ snapshot.read_at }}</span><span>Stored snapshots, not a live compliance scan.</span></div>
 </section>
 

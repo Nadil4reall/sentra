@@ -20,6 +20,8 @@
     <nav aria-label="Primary" class="sidebar">
       <div class="nav-group"><span class="nav-caption">Workspace</span>
         <a class="nav-link{% if request.endpoint == 'dashboard' %} is-active{% endif %}" {% if request.endpoint == 'dashboard' %}aria-current="page"{% endif %} href="{{ url_for('dashboard') }}"><span class="nav-index">01</span>Overview</a>
+        <a class="nav-link{% if request.endpoint == 'hardening_run' %} is-active{% endif %}" {% if request.endpoint == 'hardening_run' %}aria-current="page"{% endif %} href="{{ url_for('hardening_run') }}"><span class="nav-index">↗</span>Hardening run</a>
+        <a class="nav-link{% if request.endpoint == 'benchmarks' %} is-active{% endif %}" {% if request.endpoint == 'benchmarks' %}aria-current="page"{% endif %} href="{{ url_for('benchmarks') }}"><span class="nav-index">◆</span>Benchmarks</a>
         <a class="nav-link{% if request.endpoint in ('targets', 'target_detail', 'target_control') %} is-active{% endif %}" {% if request.endpoint in ('targets', 'target_detail', 'target_control') %}aria-current="page"{% endif %} href="{{ url_for('targets') }}"><span class="nav-index">02</span>Targets</a>
         <a class="nav-link{% if request.endpoint == 'controls' %} is-active{% endif %}" {% if request.endpoint == 'controls' %}aria-current="page"{% endif %} href="{{ url_for('controls') }}"><span class="nav-index">03</span>Controls &amp; assessments</a>
       </div>

@@ -485,6 +485,12 @@ class SandboxProvisionRequest(StrictControllerModel):
     pass
 
 
+class SandboxCloseRequest(StrictControllerModel):
+    """Zero-field request to clean up a completed disposable sandbox."""
+
+    pass
+
+
 class SandboxSessionRecord(StrictControllerModel):
     """Controller-owned M6E-A lifecycle and sealed M4 authorization evidence."""
 
@@ -892,6 +898,14 @@ class PostEnforcementVerificationRecord(StrictControllerModel):
         return self
 
 
+class SandboxValidationRunRecord(StrictControllerModel):
+    """Bounded result of the fixed Controller-owned M6 transaction."""
+
+    sandbox_session_id: UUID
+    validation_job_id: UUID
+    status: Literal[SandboxSessionStatus.COMPLETED, SandboxSessionStatus.CLOSED]
+
+
 class TargetRecord(StrictControllerModel):
     target_id: UUID
     agent_id: UUID
@@ -957,9 +971,11 @@ __all__ = [
     "ProfileSubmissionRequest",
     "SANDBOX_SESSION_TRANSITIONS",
     "SandboxProviderType",
+    "SandboxCloseRequest",
     "SandboxProvisionRequest",
     "SandboxSessionCreateRequest",
     "SandboxSessionRecord",
+    "SandboxValidationRunRecord",
     "SandboxSessionStatus",
     "StrictControllerModel",
     "TargetRecord",

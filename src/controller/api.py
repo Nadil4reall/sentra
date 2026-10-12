@@ -16,6 +16,8 @@ from src.controller.models import (
     EnrollmentRequest,
     EnrollmentResponse,
     EnforcementResultRecord,
+    EnforcementJobCreateRequest,
+    EnforcementJobRecord,
     EnforcementResultSubmissionRequest,
     HeartbeatRequest,
     HeartbeatResponse,
@@ -27,8 +29,10 @@ from src.controller.models import (
     ProfileSubmissionRequest,
     PostEnforcementVerificationRecord,
     SandboxProvisionRequest,
+    SandboxCloseRequest,
     SandboxSessionCreateRequest,
     SandboxSessionRecord,
+    SandboxValidationRunRecord,
     TargetRecord,
     ValidationJobCreateRequest,
     ValidationJobRecord,
@@ -142,6 +146,22 @@ ENDPOINTS = (
         ),
         "provision_sandbox_session",
     ),
+    Endpoint(
+        "POST",
+        (f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+         "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
+         "{sandbox_session_id}/validate"),
+        "execute_sandbox_validation",
+    ),
+    Endpoint(
+        "POST",
+        (f"{API_PREFIX}/admin/targets/{{target_id}}/profiles/{{profile_id}}/"
+         "compatibility-reports/{compatibility_report_id}/sandbox-sessions/"
+         "{sandbox_session_id}/close"),
+        "close_completed_sandbox",
+    ),
+    Endpoint("POST", f"{API_PREFIX}/admin/targets/{{target_id}}/enforcement-jobs",
+             "create_enforcement_job"),
     Endpoint(
         "POST",
         (
@@ -356,6 +376,40 @@ class ControllerAPI:
             compatibility_report_id=compatibility_report_id,
             sandbox_session_id=sandbox_session_id,
         )
+
+    def execute_sandbox_validation(
+        self, target_id: UUID, profile_id: UUID, compatibility_report_id: UUID,
+        sandbox_session_id: UUID, auth: AdminAuth,
+        request: ValidationJobCreateRequest,
+    ) -> SandboxValidationRunRecord:
+        self._require_validation_path_binding(
+            target_id, profile_id, compatibility_report_id, request,
+        )
+        return self._sandbox_manager.execute_validation(
+            auth, target_id=target_id, profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id, request=request,
+        )
+
+    def close_completed_sandbox(
+        self, target_id: UUID, profile_id: UUID, compatibility_report_id: UUID,
+        sandbox_session_id: UUID, auth: AdminAuth,
+        request: SandboxCloseRequest,
+    ) -> SandboxSessionRecord:
+        del request
+        return self._sandbox_manager.close_completed(
+            auth, target_id=target_id, profile_id=profile_id,
+            compatibility_report_id=compatibility_report_id,
+            sandbox_session_id=sandbox_session_id,
+        )
+
+    def create_enforcement_job(
+        self, target_id: UUID, auth: AdminAuth,
+        request: EnforcementJobCreateRequest,
+    ) -> EnforcementJobRecord:
+        if target_id != request.target_id:
+            raise AuthenticationError("enforcement path does not match request")
+        return self._service.create_enforcement_job(auth, request)
 
     def list_validation_results(
         self,

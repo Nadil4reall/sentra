@@ -26,6 +26,90 @@ class M8ReadModel:
     def __init__(self, database: Path) -> None:
         self.database = database
 
+    def benchmarks(self) -> list[dict]:
+        with _open_read_only(self.database) as db:
+            return _rows(db, """
+                SELECT b.benchmark_id,b.identity,b.version,b.platform,
+                       b.source_reference,b.imported_at,b.active,
+                       COUNT(c.control_id) AS control_count,
+                       COALESCE(SUM(c.selected),0) AS selected_count
+                FROM m8_benchmarks b LEFT JOIN m8_controls c
+                  ON c.benchmark_id=b.benchmark_id
+                GROUP BY b.benchmark_id ORDER BY b.active DESC,b.imported_at DESC
+                LIMIT 25
+            """)
+
+    def run_progress(self, target_id: str, benchmark_id: str) -> dict | None:
+        """Project a wizard from source rows; never persist a second workflow state."""
+        with _open_read_only(self.database) as db:
+            target = _first(db, "SELECT target_id,status,last_seen,observed_metadata_json "
+                            "FROM targets WHERE target_id=?", (target_id,))
+            benchmark = _first(db, "SELECT benchmark_id,identity,version,active "
+                               "FROM m8_benchmarks WHERE benchmark_id=?", (benchmark_id,))
+            if target is None or benchmark is None:
+                return None
+            job = _first(db, "SELECT job_id,status,created_at,completed_at FROM jobs "
+                         "WHERE target_id=? ORDER BY created_at DESC,job_id DESC LIMIT 1",
+                         (target_id,))
+            profile = _first(db, "SELECT profile_id,job_id,collected_at,received_at,"
+                             "profile_sha256 FROM profiles WHERE target_id=? AND job_id=?",
+                             (target_id, job["job_id"] if job else ""))
+            report = _first(db, "SELECT compatibility_report_id,generated_at,report_sha256,"
+                            "payload_json FROM compatibility_reports WHERE target_id=? "
+                            "AND profile_id=? ORDER BY generated_at DESC LIMIT 1",
+                            (target_id, profile["profile_id"] if profile else ""))
+            assessment = _first(db, """
+                SELECT a.assessment_id,a.state,a.created_at,
+                       r.assessment_result_id
+                FROM m8_assessments a
+                LEFT JOIN m8_assessment_report_links l ON l.assessment_id=a.assessment_id
+                LEFT JOIN m8_assessment_results r ON r.assessment_id=a.assessment_id
+                     AND r.control_id='7.1.1'
+                WHERE a.target_id=? AND a.profile_id=? AND a.benchmark_id=?
+                  AND l.compatibility_report_id=?
+                ORDER BY a.created_at DESC LIMIT 1
+            """, (target_id, profile["profile_id"] if profile else "", benchmark_id,
+                  report["compatibility_report_id"] if report else ""))
+            session = _first(db, """
+                SELECT sandbox_session_id,status,created_at,closed_at,
+                       failure_reason,quarantine_reason
+                FROM sandbox_sessions WHERE source_target_id=?
+                  AND source_profile_id=? AND source_compatibility_report_id=?
+                  AND control_id='7.1.1'
+                ORDER BY created_at DESC LIMIT 1
+            """, (target_id, profile["profile_id"] if profile else "",
+                  report["compatibility_report_id"] if report else ""))
+            validation = _first(db, "SELECT status,result,result_sha256,validation_job_id "
+                                "FROM m8_validation_outcomes WHERE sandbox_session_id=?",
+                                (session["sandbox_session_id"] if session else "",))
+            deployment = _first(db, """
+                SELECT d.deployment_id,d.state,d.enforcement_job_id,d.requested_at,
+                       p.decision,p.reason AS approval_reason
+                FROM m8_deployment_requests d
+                LEFT JOIN m8_approvals p ON p.deployment_id=d.deployment_id
+                WHERE d.assessment_result_id=? AND d.sandbox_session_id=?
+                ORDER BY d.requested_at DESC LIMIT 1
+            """, (assessment["assessment_result_id"] if assessment else "",
+                  session["sandbox_session_id"] if session else ""))
+            verification = _first(db, "SELECT outcome,verified_at,profile_sha256 "
+                                  "FROM m8_verifications WHERE deployment_id=?",
+                                  (deployment["deployment_id"] if deployment else "",))
+            if report:
+                import json
+                controls = json.loads(report.pop("payload_json"))["control_results"]
+                report["control_results"] = [
+                    {"control_id": item["control_id"], "result": item["result"],
+                     "explanation": item.get("explanation", ""),
+                     "provisional": item.get("provisional", True)}
+                    for item in controls
+                ]
+            return {
+                "target": target, "benchmark": benchmark, "job": job,
+                "profile": profile, "report": report, "assessment": assessment,
+                "session": session, "validation": validation,
+                "deployment": deployment, "verification": verification,
+            }
+
     def dashboard(self) -> dict[str, object]:
         with _open_read_only(self.database) as db:
             counts = {
@@ -306,7 +390,7 @@ class M8ReadModel:
         with _open_read_only(self.database) as db:
             return {
                 "controls": _rows(db, """
-                    SELECT c.control_id, c.title, c.selected, c.review_state,
+                    SELECT c.benchmark_id, c.control_id, c.title, c.selected, c.review_state,
                            c.adapter_capability, b.identity, b.version, b.active
                     FROM m8_controls c JOIN m8_benchmarks b ON b.benchmark_id = c.benchmark_id
                     ORDER BY b.active DESC, c.control_id LIMIT 500

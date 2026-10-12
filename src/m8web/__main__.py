@@ -38,6 +38,11 @@ def main() -> int:
         default=8080,
         help="Development port (default: 8080)",
     )
+    parser.add_argument("--controller-url", help="Verified HTTPS Controller origin")
+    parser.add_argument("--controller-ca-file", type=Path,
+                        help="Absolute Controller CA certificate path")
+    parser.add_argument("--controller-admin-credential-file", type=Path,
+                        help="Absolute protected Controller admin credential file")
     parser.add_argument(
         "--insecure-cookie-for-local-http",
         action="store_true",
@@ -54,6 +59,9 @@ def main() -> int:
         database=Path(args.database).expanduser(),
         secret_key_file=Path(args.secret_key_file).expanduser(),
         secure_cookie=not args.insecure_cookie_for_local_http,
+        controller_url=args.controller_url,
+        controller_ca_file=args.controller_ca_file,
+        controller_admin_credential_file=args.controller_admin_credential_file,
     )
 
     app = create_app(settings)
