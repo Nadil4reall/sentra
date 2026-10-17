@@ -68,8 +68,8 @@ def test_login_logout_anonymous_and_empty_dashboard(tmp_path):
     overview = client.get("/")
     assert overview.status_code == 200
     assert b"No operational activity" not in overview.data  # login audit is real activity
-    assert b"M4 review decisions" in overview.data
-    assert b">0</strong>" in overview.data
+    assert b"Welcome to SENTRA" in overview.data
+    assert b"System summary" not in overview.data
     assert client.get("/targets").status_code == 200
     assert b"No targets are enrolled" in client.get("/targets").data
     assert client.post("/logout", data={"csrf_token": _token(client)}).status_code == 302

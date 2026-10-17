@@ -24,6 +24,8 @@ from .benchmark_import import (
 from .config import M8WebSettings
 from .controller_client import ControllerClientError, M8ControllerClient
 from .read_model import M8ReadModel
+from .profile_lock import profile_creation_lock
+from .run_status import project_run
 from .status import database_health, system_status
 
 
@@ -100,7 +102,7 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
     @app.after_request
     def security_headers(response):
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'none'; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -239,8 +241,19 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                 abort(404)
         return render_template(
             "run.html", title="Hardening run", progress=progress,
+            run_status=project_run(progress) if progress else None,
             targets=read_model.targets(), benchmarks=read_model.benchmarks(),
         )
+
+    @app.get("/runs/status")
+    def hardening_run_status():
+        """Authenticated, mutation-free projection for the open run page."""
+        target_id = canonical_id(request.args.get("target_id", ""))
+        benchmark_id = canonical_id(request.args.get("benchmark_id", ""))
+        progress = read_model.run_progress(target_id, benchmark_id)
+        if progress is None:
+            abort(404)
+        return jsonify(project_run(progress))
 
     @app.post("/runs/profile")
     def run_profile():
@@ -252,14 +265,19 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
         if progress is None or progress["benchmark"]["active"] != 1:
             abort(400)
         try:
-            job = controller().create_profile_job(JobCreateRequest(target_id=UUID(target_id)))
-            if str(job.target_id) != target_id or job.job_type.value != "PROFILE_TARGET":
-                raise ControllerClientError("Controller profile response lineage is invalid")
-            audit_action("profile_collection_requested", "target", target_id,
-                         target_id=target_id)
-        except (ControllerClientError, M8DataError):
+            with profile_creation_lock(settings.database):
+                existing = read_model.active_profile_job(target_id)
+                if existing:
+                    flash("Profile collection already queued for the enrolled Agent.", "success")
+                    return redirect(run_url(target_id, benchmark_id))
+                job = controller().create_profile_job(JobCreateRequest(target_id=UUID(target_id)))
+                if str(job.target_id) != target_id or job.job_type.value != "PROFILE_TARGET":
+                    raise ControllerClientError("Controller profile response lineage is invalid")
+                audit_action("profile_collection_requested", "target", target_id,
+                             target_id=target_id)
+        except (ControllerClientError, M8DataError, OSError):
             abort(503)
-        flash(f"M3 profile job {job.job_id} queued for the enrolled Agent.", "success")
+        flash("Host evidence collection queued for the enrolled Agent.", "success")
         return redirect(run_url(target_id, benchmark_id))
 
     @app.post("/runs/analyze")
@@ -390,7 +408,7 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                          target_id=ids[0], control_id="7.1.1")
         except (ControllerClientError, M8DataError, ValueError):
             abort(409)
-        flash(f"M6 validation job {item.validation_job_id} completed.", "success")
+        flash("Sandbox validation completed; review its evidence before closing.", "success")
         return redirect(run_url(ids[0], ids[1]))
 
     @app.post("/runs/sandbox/close")

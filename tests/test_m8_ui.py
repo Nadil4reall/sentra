@@ -12,7 +12,7 @@ from test_m8_product import _app, _empty, _login, _token
 from test_m8db import _assessment_for_case
 
 
-def test_empty_overview_shows_unrecorded_workflow_without_demo_evidence(tmp_path: Path):
+def test_empty_overview_guides_setup_without_demo_evidence(tmp_path: Path):
     database, _, _, _ = _empty(tmp_path)
     snapshot = M8ReadModel(database).dashboard()
     assert snapshot["focus"] is None
@@ -23,8 +23,11 @@ def test_empty_overview_shows_unrecorded_workflow_without_demo_evidence(tmp_path
     client = _app(database).test_client()
     assert _login(client, "admin", "correct-admin-password").status_code == 302
     page = client.get("/").data
-    assert b"No target is stored yet" in page
-    assert b"No stage evidence yet" in page
+    assert b"Welcome to SENTRA" in page
+    assert b"No enrolled server" in page
+    assert b"No active supported benchmark" in page
+    assert b"Waiting for prerequisites" in page
+    assert b"System summary" not in page
     assert b"compliance percentage" not in page.lower()
 
 
@@ -49,11 +52,12 @@ def test_overview_focus_uses_real_target_control_and_distinct_stage_states(tmp_p
     client = _app(case.database).test_client()
     assert _login(client, admin["username"], "correct-admin-password").status_code == 302
     page = client.get("/").data
-    assert str(case.enrollment.target_id).encode() in page
-    assert b'Control 7.1.1' in page
-    assert b'data-state="review_required"' in page
-    assert b'data-state="validated"' in page
-    assert b"M8 approval does not itself run M7" in page
+    assert b"Current hardening run" in page
+    assert b"Continue Hardening Run" in page
+    assert b"7.1.1" in page
+    assert b"Review Required" in page
+    assert b"Sandbox validation does not modify the target server" in page
+    assert b"VERIFIED</strong>" not in page
     target_page = client.get(f"/targets/{case.enrollment.target_id}").data
     assert b"Selected-control catalogue" in target_page
     assert b"Control 7.1.1" in target_page
