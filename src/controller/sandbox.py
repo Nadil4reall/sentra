@@ -985,7 +985,7 @@ class _LibvirtValidationStream:
         connection: object,
         libvirt: object,
         *,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 90.0,
         retry_seconds: float = 0.05,
     ) -> None:
         self._stream = stream
@@ -1030,7 +1030,8 @@ class _LibvirtValidationStream:
 
         # The default event loop is process-global and must not be entered by
         # two Controller requests at once.  A short libvirt timer bounds each
-        # iteration; the outer deadline remains the existing 30 seconds.
+        # iteration; the outer deadline remains the configured validation
+        # stream timeout.
         with _LIBVIRT_EVENT_RUN_LOCK:
             callback_added = False
             timer_id: int | None = None

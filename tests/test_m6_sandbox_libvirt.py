@@ -1752,7 +1752,7 @@ def test_validation_stream_timeout_logs_only_stage_and_exception_type(
     with pytest.raises(TimeoutError, match="read timed out"):
         channel.read(4)
 
-    assert clock.now == pytest.approx(30.0)
+    assert 90.0 <= clock.now < 90.1
     messages = [record.getMessage() for record in caplog.records]
     assert sum("stage=stream_read_timeout" in message for message in messages) == 1
     assert all("payload" not in message for message in messages)
