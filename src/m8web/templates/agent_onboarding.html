@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">Operator-guided enrollment</div><h1>Add Server<span class="heading-period">.</span></h1><p>The SENTRA Agent runs locally on the managed Linux server. The Controller authorizes and records operations; profiling and approved enforcement execute on the target.</p></div></div>
+<div class="onboarding-architecture" role="img" aria-label="The Linux target Agent initiates outbound verified HTTPS to the SENTRA Controller"><div><strong>SENTRA Controller</strong><small>Authorizes and records</small></div><span>← verified HTTPS ←</span><div><strong>Linux Target · SENTRA Agent</strong><small>Initiates the connection and runs one cycle</small></div></div>
+<div class="boundary-note boundary-note-strong"><span class="boundary-mark" aria-hidden="true">!</span><div><strong>No remote installer or SSH action.</strong><p>An operator prepares the Linux server and copies the SENTRA release through an operator-controlled method. Never copy the Controller private key or administrator credential to a managed target.</p></div></div>
+<ol class="onboarding-steps">
+<li><div class="eyebrow">01 · Prepare Linux server</div><h2>Prepare protected paths</h2><p>Run these fixed directory commands on the target. The Agent state is private.</p><pre><code>sudo mkdir -p /opt/sentra
+sudo mkdir -p /etc/sentra
+sudo mkdir -p /var/lib/sentra/agent
+sudo chmod 700 /var/lib/sentra/agent</code></pre></li>
+<li><div class="eyebrow">02 · Install SENTRA files</div><h2>Place the research release</h2><p>Copy the trusted SENTRA release to <code>/opt/sentra</code> using an operator-controlled method and prepare its Python environment at <code>/opt/sentra/.venv</code>. No apt repository, deb package or automatic installer is provided here.</p></li>
+<li><div class="eyebrow">03 · Configure Controller trust</div><h2>Install the public CA</h2><p>Place only the Controller <strong>public CA certificate</strong> at <code>/etc/sentra/controller-ca.pem</code>. The Agent verifies the Controller HTTPS certificate and hostname. Never transfer a Controller private key or administrator credential.</p></li>
+<li><div class="eyebrow">04 · Enroll Agent</div><h2>Run the first Agent cycle</h2><p>Place the temporary bootstrap credential in the protected target-side file <code>/etc/sentra/bootstrap.credential</code>. The bootstrap credential is used only for first enrollment. Replace the URL and release labels below with your approved values; the command contains no secret value.</p><pre><code>cd /opt/sentra
+sudo ./.venv/bin/python -m src.agent \
+  --controller-url https://CONTROLLER:8443 \
+  --controller-ca /etc/sentra/controller-ca.pem \
+  --state /var/lib/sentra/agent/state.json \
+  --bootstrap-credential-file /etc/sentra/bootstrap.credential \
+  --agent-version AGENT_RELEASE \
+  --profiler-version m3 \
+  --sentra-version CURRENT_RELEASE</code></pre><p>After successful enrollment, remove only the temporary target-side copy:</p><pre><code>sudo rm -f /etc/sentra/bootstrap.credential</code></pre><p>Do not remove the Controller-side enrollment credential. Never display or copy <code>state.json</code>; it stores the Agent's protected Controller-issued identity.</p></li>
+<li><div class="eyebrow">05 · Verify enrollment</div><h2>Run an Agent cycle and inspect the record</h2><p>Normal cycles reuse the protected identity, send a heartbeat, poll for constrained work and return a result. The Agent is a <strong>one-cycle program</strong>, not a daemon. Do not use the bootstrap file argument after enrollment.</p><pre><code>cd /opt/sentra
+sudo ./.venv/bin/python -m src.agent \
+  --controller-url https://CONTROLLER:8443 \
+  --controller-ca /etc/sentra/controller-ca.pem \
+  --state /var/lib/sentra/agent/state.json \
+  --agent-version AGENT_RELEASE \
+  --profiler-version m3 \
+  --sentra-version CURRENT_RELEASE</code></pre><a class="button button-primary" href="{{ url_for('targets') }}">View enrolled servers</a></li>
+</ol>
+{% endblock %}

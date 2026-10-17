@@ -203,7 +203,8 @@ def test_overview_preserves_auth_csp_and_reduced_motion(tmp_path):
     assert page.status_code == 200
     assert "script-src 'self'" in page.headers["Content-Security-Policy"]
     assert "unsafe-inline" not in page.headers["Content-Security-Policy"]
-    assert b"<script" not in page.data
+    assert b'<script src="/static/theme.js"></script>' in page.data
+    assert b"<script>" not in page.data
     assert b"How SENTRA works" in page.data
     stylesheet = client.get("/static/sentra.css").data
     assert b"prefers-reduced-motion: reduce" in stylesheet

@@ -22,6 +22,7 @@ _EXPECTED_TABLES = frozenset({
     "post_enforcement_verifications", "m8_schema_migrations", "m8_benchmarks",
     "m8_controls", "m8_users", "m8_roles", "m8_user_roles",
     "m8_assessments", "m8_assessment_results", "m8_assessment_report_links",
+    "m8_run_starts",
     "m8_deployment_requests", "m8_approvals", "m8_evidence_records",
     "m8_audit_events",
 })
@@ -32,6 +33,7 @@ _EXPECTED_TRIGGERS = frozenset({
     "m8_deployment_no_duplicate_lineage", "m8_approval_no_second_decision",
     "m8_assessment_result_no_update", "m8_assessment_result_no_delete",
     "m8_report_link_no_update", "m8_report_link_no_delete",
+    "m8_run_start_no_delete", "m8_run_start_no_rebind",
 })
 _EXPECTED_VIEWS = frozenset({
     "m8_compatibility_decisions", "m8_validation_outcomes",

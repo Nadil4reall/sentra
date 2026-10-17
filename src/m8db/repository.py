@@ -480,6 +480,88 @@ class M8Repository:
                 (identifier,),
             ).fetchone())
 
+    def start_hardening_run(
+        self, *, run_id: UUID | str, target_id: UUID | str,
+        benchmark_id: UUID | str, initiated_by_user_id: UUID | str,
+    ) -> dict[str, object]:
+        """Record a pre-M3 run boundary without inventing an assessment result.
+
+        A repeated POST with the same ID and exact lineage is idempotent.  The
+        selected-control snapshot is fixed at creation, so later catalogue
+        changes cannot silently change this run's scope.
+        """
+        identifier, target, benchmark = map(_uuid, (run_id, target_id, benchmark_id))
+        with open_db(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            actor = _require_active_admin(connection, initiated_by_user_id)
+            existing = connection.execute(
+                "SELECT * FROM m8_run_starts WHERE run_id=?", (identifier,),
+            ).fetchone()
+            if existing is not None:
+                if (existing["target_id"] != target or existing["benchmark_id"] != benchmark
+                        or existing["created_by_user_id"] != actor):
+                    raise M8DataError("hardening run request conflicts with stored lineage")
+                return dict(existing)
+            selected = [row[0] for row in connection.execute(
+                "SELECT control_id FROM m8_controls WHERE benchmark_id=? "
+                "AND selected=1 ORDER BY control_id", (benchmark,),
+            )]
+            eligible = connection.execute(
+                "SELECT 1 FROM targets t JOIN agents a ON a.target_id=t.target_id "
+                "AND a.agent_id=t.agent_id JOIN m8_benchmarks b ON b.benchmark_id=? "
+                "WHERE t.target_id=? AND b.active=1", (benchmark, target),
+            ).fetchone()
+            if eligible is None or not selected:
+                raise M8DataError("enrolled target and active selected benchmark required")
+            scope = _json(selected)
+            now = _now()
+            connection.execute(
+                "INSERT INTO m8_run_starts (run_id,target_id,benchmark_id,"
+                "selected_controls_json,created_by_user_id,created_at) "
+                "VALUES (?,?,?,?,?,?)", (identifier, target, benchmark, scope, actor, now),
+            )
+            _audit_user_action(
+                connection, user_id=actor, event_type="hardening_run_started",
+                related_type="target", related_id=target, target_id=target,
+                outcome="recorded", reason_code="fresh_profile_required",
+            )
+            return dict(connection.execute(
+                "SELECT * FROM m8_run_starts WHERE run_id=?", (identifier,),
+            ).fetchone())
+
+    def link_run_profile_job(
+        self, *, run_id: UUID | str, target_id: UUID | str,
+        job_id: UUID | str,
+    ) -> None:
+        """Bind exactly one Controller-created M3 job to the explicit run."""
+        identifier, target, job = map(_uuid, (run_id, target_id, job_id))
+        with open_db(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT target_id,profile_job_id,created_at FROM m8_run_starts WHERE run_id=?",
+                (identifier,),
+            ).fetchone()
+            stored_job = connection.execute(
+                "SELECT job_type,created_at FROM jobs WHERE target_id=? AND job_id=?",
+                (target, job),
+            ).fetchone()
+            if (row is None or row["target_id"] != target or stored_job is None
+                    or stored_job["job_type"] != "PROFILE_TARGET"
+                    or datetime.fromisoformat(stored_job["created_at"])
+                       < datetime.fromisoformat(row["created_at"])):
+                raise M8DataError("profile job does not match this run")
+            if row["profile_job_id"] == job:
+                return
+            if row["profile_job_id"] is not None:
+                raise M8DataError("run already binds another profile job")
+            changed = connection.execute(
+                "UPDATE m8_run_starts SET profile_job_id=?,profile_job_linked_at=? "
+                "WHERE run_id=? AND profile_job_id IS NULL",
+                (job, _now(), identifier),
+            )
+            if changed.rowcount != 1:
+                raise M8DataError("run profile job changed concurrently")
+
     def start_assessment(self, assessment_id: UUID | str) -> None:
         with open_db(self.database_path) as connection:
             changed = connection.execute(
@@ -602,6 +684,7 @@ class M8Repository:
         self, *, target_id: UUID | str, profile_id: UUID | str,
         benchmark_id: UUID | str, compatibility_report_id: UUID | str,
         initiated_by_user_id: UUID | str,
+        run_id: UUID | str | None = None,
     ) -> dict[str, object]:
         """Group a fresh M3/M4 run without fabricating CIS PASS/FAIL evidence."""
         target, profile, benchmark, report_id = map(
@@ -625,13 +708,31 @@ class M8Repository:
                 or row["version"] != report.benchmark_version
             ):
                 raise M8DataError("active benchmark differs from M4 report")
-            selected = [item[0] for item in connection.execute(
-                "SELECT control_id FROM m8_controls WHERE benchmark_id=? AND selected=1",
-                (benchmark,),
-            )]
+            if run_id is not None:
+                run = connection.execute(
+                    "SELECT * FROM m8_run_starts WHERE run_id=?", (_uuid(run_id),),
+                ).fetchone()
+                source = connection.execute(
+                    "SELECT job_id FROM profiles WHERE target_id=? AND profile_id=?",
+                    (target, profile),
+                ).fetchone()
+                if (run is None or source is None or run["target_id"] != target
+                        or run["benchmark_id"] != benchmark
+                        or run["profile_job_id"] != source["job_id"]
+                        or connection.execute(
+                            "SELECT 1 FROM m8_assessments WHERE assessment_id=?",
+                            (_uuid(run_id),),
+                        ).fetchone() is not None):
+                    raise M8DataError("M4 report does not belong to the fresh run profile")
+                selected = json.loads(run["selected_controls_json"])
+            else:
+                selected = [item[0] for item in connection.execute(
+                    "SELECT control_id FROM m8_controls WHERE benchmark_id=? AND selected=1",
+                    (benchmark,),
+                )]
             if not selected or not set(selected) <= report_controls:
                 raise M8DataError("selected controls are not covered by M4")
-            identifier, now = _uuid(uuid4()), _now()
+            identifier, now = _uuid(run_id or uuid4()), _now()
             connection.execute(
                 "INSERT INTO m8_assessments (assessment_id,target_id,profile_id,"
                 "benchmark_id,state,created_at,started_at,completed_at) "
@@ -696,6 +797,14 @@ class M8Repository:
                     or row["approval_decision"] != "approved"
                     or row["enforcement_job_id"]):
                 raise M8DataError("deployment is not awaiting controlled execution")
+            active_other = connection.execute(
+                "SELECT enforcement_job_id FROM enforcement_jobs WHERE target_id=? "
+                "AND control_id=? AND status IN ('pending','dispatched') "
+                "AND request_id<>? LIMIT 1",
+                (row["target_id"], row["control_id"], row["deployment_id"]),
+            ).fetchone()
+            if active_other is not None:
+                raise M8DataError("another enforcement job is active for this target/control")
             evidence = self.controller.get_sandbox_validation_evidence(
                 sandbox_session_id=UUID(row["sandbox_session_id"]),
             )
@@ -800,6 +909,15 @@ class M8Repository:
             )
             if existing is not None:
                 return dict(existing)
+            active_other = connection.execute(
+                "SELECT 1 FROM enforcement_jobs WHERE target_id=? AND control_id=? "
+                "AND status IN ('pending','dispatched') LIMIT 1",
+                (linked["target_id"], linked["control_id"]),
+            ).fetchone()
+            if active_other is not None:
+                raise M8DataError(
+                    "an enforcement job is active for this target/control"
+                )
             session = self.controller.get_sandbox_session(
                 target_id=UUID(linked["target_id"]),
                 profile_id=UUID(linked["profile_id"]),

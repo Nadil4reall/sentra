@@ -24,7 +24,9 @@ from .benchmark_import import (
 from .config import M8WebSettings
 from .controller_client import ControllerClientError, M8ControllerClient
 from .read_model import M8ReadModel
-from .profile_lock import profile_creation_lock
+from .profile_lock import (
+    analysis_creation_lock, enforcement_creation_lock, profile_creation_lock,
+)
 from .run_status import project_run
 from .status import database_health, system_status
 
@@ -120,8 +122,31 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                 or sum(len(values) for _, values in request.form.lists()) != len(fields) + 1):
             abort(400)
 
-    def run_url(target_id: str, benchmark_id: str) -> str:
-        return url_for("hardening_run", target_id=target_id, benchmark_id=benchmark_id)
+    def run_url(target_id: str, benchmark_id: str,
+                run_id: str | None = None) -> str:
+        args = {"target_id": target_id, "benchmark_id": benchmark_id}
+        if run_id is not None:
+            args["run_id"] = run_id
+        return url_for("hardening_run", **args)
+
+    def exact_run_form(*fields: str) -> str | None:
+        run_id = request.form.get("run_id")
+        exact_form(*fields, *(["run_id"] if run_id is not None else []))
+        return canonical_id(run_id) if run_id is not None else None
+
+    def form_run_progress(target_id: str, benchmark_id: str,
+                          run_id: str | None) -> dict:
+        progress = read_model.run_progress(target_id, benchmark_id, run_id)
+        if (progress is None or not progress["is_latest_run"]
+                or (progress["run_start"] is not None
+                    and run_id != progress["run_start"]["run_id"])):
+            abort(400)
+        return progress
+
+    def progress_url(progress: dict) -> str:
+        return run_url(progress["target"]["target_id"],
+                       progress["benchmark"]["benchmark_id"],
+                       progress["run_start"]["run_id"] if progress["run_start"] else None)
 
     def audit_action(event: str, related_type: str, related_id: str,
                      *, target_id: str | None = None,
@@ -230,27 +255,81 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
     def hardening_run():
         target_id = request.args.get("target_id")
         benchmark_id = request.args.get("benchmark_id")
+        run_id = request.args.get("run_id")
         progress = None
         if target_id is not None or benchmark_id is not None:
             if not target_id or not benchmark_id:
                 abort(400)
             progress = read_model.run_progress(
                 canonical_id(target_id), canonical_id(benchmark_id),
+                canonical_id(run_id) if run_id is not None else None,
             )
             if progress is None:
                 abort(404)
+        elif run_id is not None:
+            abort(400)
         return render_template(
             "run.html", title="Hardening run", progress=progress,
             run_status=project_run(progress) if progress else None,
             targets=read_model.targets(), benchmarks=read_model.benchmarks(),
         )
 
+    @app.get("/runs/new")
+    def new_hardening_run():
+        targets = read_model.targets()
+        benchmarks = read_model.benchmarks()
+        target_id = request.args.get("target_id", "")
+        benchmark_id = request.args.get("benchmark_id", "")
+        return render_template(
+            "run_new.html", title="Start a new hardening run",
+            targets=targets, benchmarks=benchmarks,
+            run_id=str(uuid4()),
+            selected_target=next((t for t in targets if t["target_id"] == target_id), None),
+            selected_benchmark=next((b for b in benchmarks
+                                     if b["benchmark_id"] == benchmark_id and b["active"]), None),
+        )
+
+    @app.post("/runs/new")
+    def create_hardening_run():
+        require_admin()
+        exact_form("run_id", "target_id", "benchmark_id")
+        try:
+            run = repository().start_hardening_run(
+                run_id=canonical_id(request.form["run_id"]),
+                target_id=canonical_id(request.form["target_id"]),
+                benchmark_id=canonical_id(request.form["benchmark_id"]),
+                initiated_by_user_id=g.user["user_id"],
+            )
+        except M8DataError:
+            abort(409)
+        flash("New run started. Previous evidence is preserved; fresh host evidence is required.",
+              "success")
+        return redirect(run_url(run["target_id"], run["benchmark_id"], run["run_id"]))
+
+    @app.get("/runs/history")
+    def run_history():
+        return render_template("run_history.html", title="Previous runs",
+                               runs=read_model.run_history())
+
+    @app.get("/runs/history/<run_id>")
+    def run_history_detail(run_id: str):
+        run = read_model.run_start(canonical_id(run_id))
+        if run is None:
+            abort(404)
+        progress = read_model.run_progress(run["target_id"], run["benchmark_id"], run_id)
+        if progress is None:
+            abort(404)
+        return render_template("run_history_detail.html", title="Previous run",
+                               progress=progress, run_status=project_run(progress))
+
     @app.get("/runs/status")
     def hardening_run_status():
         """Authenticated, mutation-free projection for the open run page."""
         target_id = canonical_id(request.args.get("target_id", ""))
         benchmark_id = canonical_id(request.args.get("benchmark_id", ""))
-        progress = read_model.run_progress(target_id, benchmark_id)
+        run_id = request.args.get("run_id")
+        progress = read_model.run_progress(target_id, benchmark_id,
+                                           canonical_id(run_id) if run_id else None)
         if progress is None:
             abort(404)
         return jsonify(project_run(progress))
@@ -258,66 +337,84 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
     @app.post("/runs/profile")
     def run_profile():
         require_admin()
-        exact_form("target_id", "benchmark_id")
+        run_id = exact_run_form("target_id", "benchmark_id")
         target_id = canonical_id(request.form["target_id"])
         benchmark_id = canonical_id(request.form["benchmark_id"])
-        progress = read_model.run_progress(target_id, benchmark_id)
+        progress = form_run_progress(target_id, benchmark_id, run_id)
         if progress is None or progress["benchmark"]["active"] != 1:
             abort(400)
+        if progress["run_start"] is not None and progress["run_start"]["profile_job_id"]:
+            flash("Host evidence was already requested for this run.", "success")
+            return redirect(progress_url(progress))
         try:
             with profile_creation_lock(settings.database):
+                progress = form_run_progress(target_id, benchmark_id, run_id)
+                if (progress["run_start"] is not None
+                        and progress["run_start"]["profile_job_id"]):
+                    flash("Host evidence was already requested for this run.", "success")
+                    return redirect(progress_url(progress))
                 existing = read_model.active_profile_job(target_id)
                 if existing:
-                    flash("Profile collection already queued for the enrolled Agent.", "success")
-                    return redirect(run_url(target_id, benchmark_id))
+                    flash("A profile job is already queued for this server. Wait for it to finish before collecting fresh run evidence.", "success")
+                    return redirect(progress_url(progress))
                 job = controller().create_profile_job(JobCreateRequest(target_id=UUID(target_id)))
                 if str(job.target_id) != target_id or job.job_type.value != "PROFILE_TARGET":
                     raise ControllerClientError("Controller profile response lineage is invalid")
+                if progress["run_start"] is not None:
+                    repository().link_run_profile_job(
+                        run_id=progress["run_start"]["run_id"],
+                        target_id=target_id, job_id=job.job_id,
+                    )
                 audit_action("profile_collection_requested", "target", target_id,
                              target_id=target_id)
         except (ControllerClientError, M8DataError, OSError):
             abort(503)
         flash("Host evidence collection queued for the enrolled Agent.", "success")
-        return redirect(run_url(target_id, benchmark_id))
+        return redirect(progress_url(progress))
 
     @app.post("/runs/analyze")
     def run_analyze():
         require_admin()
-        exact_form("target_id", "benchmark_id", "profile_id")
+        run_id = exact_run_form("target_id", "benchmark_id", "profile_id")
         target_id = canonical_id(request.form["target_id"])
         benchmark_id = canonical_id(request.form["benchmark_id"])
         profile_id = canonical_id(request.form["profile_id"])
-        progress = read_model.run_progress(target_id, benchmark_id)
+        progress = form_run_progress(target_id, benchmark_id, run_id)
         if (progress is None or progress["benchmark"]["active"] != 1
                 or progress["profile"] is None
                 or progress["profile"]["profile_id"] != profile_id):
             abort(400)
         try:
-            report = controller().run_compatibility(CompatibilityAnalysisRequest(
-                target_id=UUID(target_id), profile_id=UUID(profile_id),
-            ))
-            if str(report.target_id) != target_id or str(report.profile_id) != profile_id:
-                raise ControllerClientError("Controller M4 response lineage is invalid")
-            repository().record_compatibility_assessment(
-                target_id=target_id, profile_id=profile_id, benchmark_id=benchmark_id,
-                compatibility_report_id=report.compatibility_report_id,
-                initiated_by_user_id=g.user["user_id"],
-            )
-        except (ControllerClientError, M8DataError, ValueError):
+            with analysis_creation_lock(settings.database):
+                progress = form_run_progress(target_id, benchmark_id, run_id)
+                if run_id is not None and progress["report"] is not None:
+                    return redirect(progress_url(progress))
+                report = controller().run_compatibility(CompatibilityAnalysisRequest(
+                    target_id=UUID(target_id), profile_id=UUID(profile_id),
+                ))
+                if str(report.target_id) != target_id or str(report.profile_id) != profile_id:
+                    raise ControllerClientError("Controller M4 response lineage is invalid")
+                repository().record_compatibility_assessment(
+                    target_id=target_id, profile_id=profile_id, benchmark_id=benchmark_id,
+                    compatibility_report_id=report.compatibility_report_id,
+                    initiated_by_user_id=g.user["user_id"],
+                    run_id=run_id,
+                )
+        except (ControllerClientError, M8DataError, ValueError, OSError):
             abort(409)
-        return redirect(run_url(target_id, benchmark_id))
+        return redirect(progress_url(progress))
 
     @app.post("/runs/sandbox/create")
     def run_sandbox_create():
         require_admin()
-        exact_form("target_id", "benchmark_id", "profile_id", "report_id", "sandbox_ack")
+        run_id = exact_run_form("target_id", "benchmark_id", "profile_id", "report_id", "sandbox_ack")
         if request.form["sandbox_ack"] != "on":
             abort(400)
         target_id, benchmark_id, profile_id, report_id = (
             canonical_id(request.form[field]) for field in
             ("target_id", "benchmark_id", "profile_id", "report_id")
         )
-        progress = read_model.run_progress(target_id, benchmark_id)
+        progress = form_run_progress(target_id, benchmark_id, run_id)
         if (progress is None or progress["report"] is None
                 or progress["report"]["compatibility_report_id"] != report_id
                 or progress["benchmark"]["active"] != 1
@@ -342,13 +439,13 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                          control_id="7.1.1")
         except (ControllerClientError, M8DataError):
             abort(409)
-        return redirect(run_url(target_id, benchmark_id))
+        return redirect(progress_url(progress))
 
     def sandbox_lineage():
-        exact_form("target_id", "benchmark_id", "profile_id", "report_id", "session_id")
+        run_id = exact_run_form("target_id", "benchmark_id", "profile_id", "report_id", "session_id")
         ids = tuple(canonical_id(request.form[field]) for field in
                     ("target_id", "benchmark_id", "profile_id", "report_id", "session_id"))
-        progress = read_model.run_progress(ids[0], ids[1])
+        progress = form_run_progress(ids[0], ids[1], run_id)
         if (progress is None or progress["session"] is None
                 or progress["session"]["sandbox_session_id"] != ids[4]
                 or progress["profile"]["profile_id"] != ids[2]
@@ -359,7 +456,7 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
     @app.post("/runs/sandbox/provision")
     def run_sandbox_provision():
         require_admin()
-        ids, _ = sandbox_lineage()
+        ids, progress = sandbox_lineage()
         try:
             item = controller().provision_sandbox(
                 *map(UUID, (ids[0], ids[2], ids[3], ids[4]))
@@ -370,18 +467,18 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                          target_id=ids[0], control_id="7.1.1")
         except (ControllerClientError, M8DataError):
             abort(409)
-        return redirect(run_url(ids[0], ids[1]))
+        return redirect(progress_url(progress))
 
     @app.post("/runs/sandbox/validate")
     def run_sandbox_validate():
         require_admin()
-        exact_form("target_id", "benchmark_id", "profile_id", "report_id",
-                   "session_id", "approval_ack", "risk_ack", "override_reason")
+        run_id = exact_run_form("target_id", "benchmark_id", "profile_id", "report_id",
+                                "session_id", "approval_ack", "risk_ack", "override_reason")
         if request.form["approval_ack"] != "on" or request.form["risk_ack"] != "on":
             abort(400)
         ids = tuple(canonical_id(request.form[field]) for field in
                     ("target_id", "benchmark_id", "profile_id", "report_id", "session_id"))
-        progress = read_model.run_progress(ids[0], ids[1])
+        progress = form_run_progress(ids[0], ids[1], run_id)
         if (progress is None or progress["session"] is None
                 or progress["session"]["sandbox_session_id"] != ids[4]
                 or progress["session"]["status"] != "READY"
@@ -409,7 +506,7 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
         except (ControllerClientError, M8DataError, ValueError):
             abort(409)
         flash("Sandbox validation completed; review its evidence before closing.", "success")
-        return redirect(run_url(ids[0], ids[1]))
+        return redirect(progress_url(progress))
 
     @app.post("/runs/sandbox/close")
     def run_sandbox_close():
@@ -427,12 +524,17 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
                          target_id=ids[0], control_id="7.1.1")
         except (ControllerClientError, M8DataError):
             abort(409)
-        return redirect(run_url(ids[0], ids[1]))
+        return redirect(progress_url(progress))
 
     @app.get("/targets")
     def targets():
         return render_template("targets.html", title="Targets",
                                targets=read_model.targets())
+
+    @app.get("/targets/new")
+    def agent_onboarding():
+        require_admin()
+        return render_template("agent_onboarding.html", title="Add Server")
 
     @app.get("/targets/<target_id>")
     def target_detail(target_id: str):
@@ -516,25 +618,26 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
         deployment_id = canonical_id(deployment_id)
         repo = repository()
         try:
-            existing_job_id = repo.linked_enforcement_job(deployment_id)
-            if existing_job_id is not None:
-                flash(f"Deployment already started: M7 job {existing_job_id}.", "success")
-                return redirect(url_for("deployments"))
-            approved = repo.approved_deployment_lineage(deployment_id)
-            job = controller().create_enforcement_job(EnforcementJobCreateRequest(
-                request_id=UUID(deployment_id),
-                target_id=UUID(approved["target_id"]),
-                profile_id=UUID(approved["profile_id"]),
-                compatibility_report_id=UUID(approved["compatibility_report_id"]),
-                sandbox_session_id=UUID(approved["sandbox_session_id"]),
-                control_id="7.1.1",
-                administrator_enforcement_approval_acknowledged=True,
-            ))
-            repo.link_enforcement_job(
-                deployment_id=deployment_id, enforcement_job_id=job.enforcement_job_id,
-                initiated_by_user_id=g.user["user_id"],
-            )
-        except (M8DataError, ControllerClientError, ValueError):
+            with enforcement_creation_lock(settings.database):
+                existing_job_id = repo.linked_enforcement_job(deployment_id)
+                if existing_job_id is not None:
+                    flash(f"Deployment already started: M7 job {existing_job_id}.", "success")
+                    return redirect(url_for("deployments"))
+                approved = repo.approved_deployment_lineage(deployment_id)
+                job = controller().create_enforcement_job(EnforcementJobCreateRequest(
+                    request_id=UUID(deployment_id),
+                    target_id=UUID(approved["target_id"]),
+                    profile_id=UUID(approved["profile_id"]),
+                    compatibility_report_id=UUID(approved["compatibility_report_id"]),
+                    sandbox_session_id=UUID(approved["sandbox_session_id"]),
+                    control_id="7.1.1",
+                    administrator_enforcement_approval_acknowledged=True,
+                ))
+                repo.link_enforcement_job(
+                    deployment_id=deployment_id, enforcement_job_id=job.enforcement_job_id,
+                    initiated_by_user_id=g.user["user_id"],
+                )
+        except (M8DataError, ControllerClientError, ValueError, OSError):
             abort(409)
         flash("M7 controlled deployment job created; Agent execution is separate.", "success")
         return redirect(url_for("deployments"))
@@ -542,12 +645,31 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
     @app.get("/evidence")
     def evidence():
         return render_template("evidence.html", title="Evidence index",
-                               evidence=read_model.evidence())
+                               evidence=read_model.evidence(),
+                               sources=read_model.evidence_sources())
 
     @app.get("/audit")
     def audit():
+        selected = request.args.get("filter", "all")
+        if selected not in {"all", "workflow", "administrator", "authentication", "failures"}:
+            abort(400)
+        events = read_model.audit()
+        if selected == "authentication":
+            events = [item for item in events if item["event_type"] in
+                      {"login_succeeded", "logout_succeeded"}]
+        elif selected == "administrator":
+            events = [item for item in events if item["source"] == "M8 audit"
+                      and item["event_type"] not in {"login_succeeded", "logout_succeeded"}]
+        elif selected == "workflow":
+            events = [item for item in events if item["event_type"] not in
+                      {"login_succeeded", "logout_succeeded"}]
+        elif selected == "failures":
+            events = [item for item in events if any(
+                marker in (str(item["outcome"] or "") + " "
+                           + str(item["event_type"] or "")).lower()
+                for marker in ("fail", "error", "reject", "quarantin", "rollback"))]
         return render_template("audit.html", title="Operational timeline",
-                               events=read_model.audit())
+                               events=events, selected_filter=selected)
 
     @app.errorhandler(400)
     @app.errorhandler(403)

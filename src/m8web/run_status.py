@@ -35,7 +35,9 @@ def project_run(progress: dict) -> dict:
         {"key": "server", "title": "Server", "state": "complete",
          "label": target["hostname"] or "Enrolled server", "at": target["created_at"]},
         {"key": "benchmark", "title": "Benchmark",
-         "state": "complete" if progress["benchmark"]["active"] else "blocked",
+         "state": "complete" if (progress["benchmark"]["active"]
+                                 or progress.get("run_start")
+                                 or progress.get("assessment")) else "blocked",
          "label": progress["benchmark"]["identity"], "at": None},
     ]
     if profile:

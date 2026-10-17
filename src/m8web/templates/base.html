@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>{{ title }} · SENTRA</title>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='sentra.css') }}">
 </head>
 <body>
@@ -12,7 +13,7 @@
   {% if current_user %}
   <header class="site-header">
     <a class="brand" href="{{ url_for('dashboard') }}" aria-label="SENTRA overview"><span class="brand-symbol" aria-hidden="true">S</span><span class="brand-word">SENTRA<small>Security Control Assessment &amp; Enforcement</small></span></a>
-    <div class="header-meta"><span class="header-context"><span class="live-dot" aria-hidden="true"></span> Controller records</span><span class="user-identity">{{ current_user.username }} <small>{{ current_user.roles|join(' · ') }}</small></span>
+    <div class="header-meta"><span class="header-context"><span class="live-dot" aria-hidden="true"></span> Controller records</span><label class="appearance-control" for="appearance"><span>Appearance</span><select id="appearance" name="appearance" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><span class="user-identity">{{ current_user.username }} <small>{{ current_user.roles|join(' · ') }}</small></span>
       <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button button-ghost button-small" type="submit">Sign out</button></form>
     </div>
   </header>
