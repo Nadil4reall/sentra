@@ -70,7 +70,7 @@ def _assessment_for_case(repo, case):
 
 
 def test_empty_initialization_is_one_controller_database_without_fake_records(db):
-    assert apply_migrations(db) == [1]
+    assert apply_migrations(db) == [1, 2]
     report = check_db(db)
     assert report["ok"] and report["sqlite_integrity"] == "ok"
     assert report["foreign_key_violations"] == 0
@@ -90,9 +90,9 @@ def test_empty_initialization_is_one_controller_database_without_fake_records(db
 
 
 def test_migration_idempotency_and_status(db):
-    assert apply_migrations(db) == [1]
+    assert apply_migrations(db) == [1, 2]
     assert apply_migrations(db) == []
-    assert check_db(db)["migration_versions"] == [1]
+    assert check_db(db)["migration_versions"] == [1, 2]
 
 
 def test_migration_rejects_conflicting_schema_atomically(db):
@@ -525,8 +525,8 @@ def test_cli_init_check_migrations_use_explicit_controller_path(db, capsys):
     assert main(["--database", str(db), "check"]) == 0
     assert main(["--database", str(db), "migrations"]) == 0
     output = capsys.readouterr().out.splitlines()
-    assert json.loads(output[0])["applied_migrations"] == [1]
-    assert json.loads(output[-1])["migration_versions"] == [1]
+    assert json.loads(output[0])["applied_migrations"] == [1, 2]
+    assert json.loads(output[-1])["migration_versions"] == [1, 2]
 
 
 def test_database_connections_are_closed_after_context(db):

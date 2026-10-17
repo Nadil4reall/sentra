@@ -470,7 +470,7 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
             )
         except (M8DataError, ValueError):
             abort(400)
-        flash(f"Request {result['deployment_id']} recorded for administrator review.", "success")
+        flash(f"Approval requested: {result['deployment_id']}.", "success")
         return redirect(url_for("deployments"))
 
     @app.post("/deployments/<deployment_id>/decision")
@@ -498,6 +498,10 @@ def create_app(settings: M8WebSettings, *, controller_client=None) -> Flask:
         deployment_id = canonical_id(deployment_id)
         repo = repository()
         try:
+            existing_job_id = repo.linked_enforcement_job(deployment_id)
+            if existing_job_id is not None:
+                flash(f"Deployment already started: M7 job {existing_job_id}.", "success")
+                return redirect(url_for("deployments"))
             approved = repo.approved_deployment_lineage(deployment_id)
             job = controller().create_enforcement_job(EnforcementJobCreateRequest(
                 request_id=UUID(deployment_id),

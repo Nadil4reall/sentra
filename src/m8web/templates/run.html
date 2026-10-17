@@ -17,6 +17,9 @@
       {% if progress.deployment.decision %}Decision: {{ progress.deployment.decision }} · {{ progress.deployment.approval_reason }}{% endif %}
     </p>
     {% if progress.deployment.enforcement_job_id %}<p>M7 job <code>{{ progress.deployment.enforcement_job_id }}</code></p>{% endif %}
+    {% if progress.deployment.enforcement_job_id %}<p>Deployment already started.</p>
+    {% elif progress.deployment.state == 'awaiting_approval' %}<p>Approval requested.</p>
+    {% elif progress.deployment.state == 'approved' %}<p>Approved; deployment has not been started.</p>{% endif %}
   {% else %}
     <p>No M8 deployment request exists for this exact assessment and sandbox lineage.</p>
   {% endif %}
@@ -25,9 +28,9 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="assessment_result_id" value="{{ progress.assessment.assessment_result_id }}">
       <input type="hidden" name="sandbox_session_id" value="{{ progress.session.sandbox_session_id }}">
-      <button class="button button-primary" type="submit">Request administrator review</button>
+      <button class="button button-primary" type="submit">Request approval</button>
     </form>
-  {% elif 'admin' in current_user.roles and progress.deployment and progress.deployment.state == 'awaiting_approval' %}
+  {% elif 'admin' in current_user.roles and progress.deployment and progress.deployment.approval_count == 0 and progress.deployment.state == 'awaiting_approval' %}
     <form method="post" action="{{ url_for('deployment_decision', deployment_id=progress.deployment.deployment_id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label for="run-decision-reason">Review reason</label>
@@ -36,7 +39,7 @@
       <select id="run-decision" name="decision"><option value="approved">Approve</option><option value="rejected">Reject</option></select>
       <button class="button button-primary" type="submit">Record decision</button>
     </form>
-  {% elif 'admin' in current_user.roles and progress.deployment and progress.deployment.state == 'approved' and not progress.deployment.enforcement_job_id %}
+  {% elif 'admin' in current_user.roles and progress.deployment and progress.deployment.approval_count == 1 and progress.deployment.state == 'approved' and not progress.deployment.enforcement_job_id %}
     <form method="post" action="{{ url_for('deployment_start', deployment_id=progress.deployment.deployment_id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label><input type="checkbox" name="enforcement_ack" value="on" required> I explicitly authorize the separate M7 Controller gate for this reviewed request.</label>

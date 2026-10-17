@@ -29,6 +29,7 @@ _EXPECTED_TRIGGERS = frozenset({
     "m8_evidence_no_update", "m8_evidence_no_delete",
     "m8_audit_no_update", "m8_audit_no_delete",
     "m8_approval_no_update", "m8_approval_no_delete",
+    "m8_deployment_no_duplicate_lineage", "m8_approval_no_second_decision",
     "m8_assessment_result_no_update", "m8_assessment_result_no_delete",
     "m8_report_link_no_update", "m8_report_link_no_delete",
 })

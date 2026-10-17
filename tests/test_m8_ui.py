@@ -72,7 +72,7 @@ def test_redesigned_approval_form_keeps_role_and_csrf_boundaries(tmp_path: Path)
     viewer = _app(case.database).test_client()
     assert _login(viewer, "viewer", "correct-viewer-password").status_code == 302
     viewer_page = viewer.get("/deployments").data
-    assert b"Create request" not in viewer_page
+    assert b"Request approval" not in viewer_page
     assert b"Record decision" not in viewer_page
     admin_client = _app(case.database).test_client()
     assert _login(admin_client, admin["username"], "correct-admin-password").status_code == 302
@@ -81,7 +81,7 @@ def test_redesigned_approval_form_keeps_role_and_csrf_boundaries(tmp_path: Path)
     assert _token(admin_client).encode() in admin_page
     assert b'name="assessment_result_id"' in admin_page
     assert b'name="sandbox_session_id"' in admin_page
-    assert b"Create request" in admin_page
+    assert b"Request approval" in admin_page
 
 
 def test_static_design_respects_focus_and_reduced_motion():

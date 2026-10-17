@@ -70,6 +70,13 @@ Migration [`001_core.sql`](../src/m8db/sql/001_core.sql) adds:
   not arbitrary binary artifacts. Repository methods validate supported source
   IDs/target ownership and compare supplied hashes with authoritative hashes.
 
+Migration [`002_deployment_idempotency.sql`](../src/m8db/sql/002_deployment_idempotency.sql)
+adds a lineage lookup index and insert guards for duplicate deployment requests
+and second approval decisions. It does not rewrite or delete older duplicate
+rows. The application chooses one canonical request for each exact assessment,
+target, control, and sandbox lineage; older duplicates remain in history but
+are read-only in the operational UI.
+
 Four read-only views—`m8_compatibility_decisions`, `m8_validation_outcomes`,
 `m8_deployments`, and `m8_verifications`—expose per-control M4 decisions and
 M6/M7 states without duplicating their authoritative payloads. Deployment

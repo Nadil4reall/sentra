@@ -107,6 +107,15 @@ service independently rechecks closed validated evidence. Rejection blocks the
 action; an approved request alone creates zero jobs. Agent execution and fresh
 `PROFILE_TARGET` verification remain entirely within M7.
 
+Repeated POSTs for the same assessment/target/control/sandbox lineage reuse one
+M8 request. An identical approval replay returns its existing immutable decision;
+a changed decision or reason conflicts. M7 creation uses the deployment ID as
+the Controller request ID, so lost responses can be retried without a second
+job. Once linked, M8 displays the existing job without another Controller call.
+Historical duplicate rows remain visible in detailed history, while only one
+canonical request is actionable. Forms use POST/Redirect/GET; server-side
+transactions and insert guards provide the idempotency boundary.
+
 ## Local development smoke test
 
 Use the actual existing Controller database path. Stop writers and make a

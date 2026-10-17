@@ -84,11 +84,22 @@ class M8ReadModel:
                                 (session["sandbox_session_id"] if session else "",))
             deployment = _first(db, """
                 SELECT d.deployment_id,d.state,d.enforcement_job_id,d.requested_at,
-                       p.decision,p.reason AS approval_reason
+                       p.decision,p.reason AS approval_reason,
+                       (SELECT COUNT(*) FROM m8_approvals p2
+                        WHERE p2.deployment_id=d.deployment_id) AS approval_count
                 FROM m8_deployment_requests d
-                LEFT JOIN m8_approvals p ON p.deployment_id=d.deployment_id
+                LEFT JOIN m8_approvals p ON p.approval_id=(
+                    SELECT p2.approval_id FROM m8_approvals p2
+                    WHERE p2.deployment_id=d.deployment_id
+                    ORDER BY p2.decided_at,p2.approval_id LIMIT 1)
                 WHERE d.assessment_result_id=? AND d.sandbox_session_id=?
-                ORDER BY d.requested_at DESC LIMIT 1
+                ORDER BY CASE
+                    WHEN d.enforcement_job_id IS NOT NULL THEN 0
+                    WHEN d.state='approved' THEN 1
+                    WHEN d.state='awaiting_approval' THEN 2
+                    WHEN d.state='rejected' THEN 3
+                    ELSE 4 END,
+                    d.requested_at,d.deployment_id LIMIT 1
             """, (assessment["assessment_result_id"] if assessment else "",
                   session["sandbox_session_id"] if session else ""))
             verification = _first(db, "SELECT outcome,verified_at,profile_sha256 "
@@ -451,9 +462,28 @@ class M8ReadModel:
                            d.enforcement_job_id, d.deployment_state, d.requested_at,
                            a.user_id AS reviewer_id, u.username AS reviewer_username,
                            a.decision AS approval_decision, a.reason AS approval_reason,
-                           a.validation_evidence_sha256
+                           a.validation_evidence_sha256,
+                           (SELECT COUNT(*) FROM m8_approvals a2
+                            WHERE a2.deployment_id=d.deployment_id) AS approval_count,
+                           CASE WHEN d.deployment_id=(
+                               SELECT x.deployment_id FROM m8_deployment_requests x
+                               WHERE x.assessment_result_id=d.assessment_result_id
+                                 AND x.target_id=d.target_id
+                                 AND x.control_id=d.control_id
+                                 AND x.sandbox_session_id=d.sandbox_session_id
+                               ORDER BY CASE
+                                   WHEN x.enforcement_job_id IS NOT NULL THEN 0
+                                   WHEN x.state='approved' THEN 1
+                                   WHEN x.state='awaiting_approval' THEN 2
+                                   WHEN x.state='rejected' THEN 3
+                                   ELSE 4 END,
+                                   x.requested_at,x.deployment_id LIMIT 1)
+                             THEN 1 ELSE 0 END AS is_canonical
                     FROM m8_deployments d LEFT JOIN m8_approvals a
-                      ON a.deployment_id = d.deployment_id
+                      ON a.approval_id=(
+                          SELECT a2.approval_id FROM m8_approvals a2
+                          WHERE a2.deployment_id=d.deployment_id
+                          ORDER BY a2.decided_at,a2.approval_id LIMIT 1)
                     LEFT JOIN m8_users u ON u.user_id = a.user_id
                     ORDER BY d.requested_at DESC LIMIT 200
                 """),
@@ -470,6 +500,12 @@ class M8ReadModel:
                     JOIN m8_validation_outcomes v ON v.sandbox_session_id = s.sandbox_session_id
                     WHERE r.control_id = '7.1.1' AND v.result = 'validated'
                       AND v.status = 'COMPLETED'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM m8_deployment_requests d
+                          WHERE d.assessment_result_id=r.assessment_result_id
+                            AND d.target_id=r.target_id
+                            AND d.control_id=r.control_id
+                            AND d.sandbox_session_id=s.sandbox_session_id)
                     ORDER BY s.closed_at DESC LIMIT 100
                 """),
                 "historical_m7": _rows(db, """

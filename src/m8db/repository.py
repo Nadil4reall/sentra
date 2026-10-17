@@ -132,6 +132,27 @@ def _require_active_admin(connection: sqlite3.Connection, user_id: UUID | str) -
     return identifier
 
 
+def _canonical_deployment_request(
+    connection: sqlite3.Connection, *, assessment_result_id: str,
+    target_id: str, control_id: str, sandbox_session_id: str,
+) -> sqlite3.Row | None:
+    """Choose one actionable row without altering legacy duplicate history."""
+    return connection.execute(
+        """SELECT * FROM m8_deployment_requests
+           WHERE assessment_result_id=? AND target_id=? AND control_id=?
+             AND sandbox_session_id=?
+           ORDER BY CASE
+               WHEN enforcement_job_id IS NOT NULL THEN 0
+               WHEN state='approved' THEN 1
+               WHEN state='awaiting_approval' THEN 2
+               WHEN state='rejected' THEN 3
+               ELSE 4 END,
+               requested_at, deployment_id
+           LIMIT 1""",
+        (assessment_result_id, target_id, control_id, sandbox_session_id),
+    ).fetchone()
+
+
 class M8Repository:
     """Additive persistence; operational truth remains in Controller storage."""
 
@@ -649,19 +670,31 @@ class M8Repository:
     ) -> dict[str, object]:
         """Return only an approved, unlinked proposal with unchanged M6 evidence."""
         with open_db(self.database_path) as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """SELECT d.*, a.profile_id, l.compatibility_report_id,
-                          p.validation_evidence_sha256
+                          p.validation_evidence_sha256,
+                          p.decision AS approval_decision
                    FROM m8_deployment_requests d
                    JOIN m8_assessment_results r
                      ON r.assessment_result_id=d.assessment_result_id
                    JOIN m8_assessments a ON a.assessment_id=r.assessment_id
                    JOIN m8_assessment_report_links l ON l.assessment_id=a.assessment_id
                    JOIN m8_approvals p ON p.deployment_id=d.deployment_id
-                   WHERE d.deployment_id=? AND p.decision='approved'""",
+                   WHERE d.deployment_id=?""",
                 (_uuid(deployment_id),),
-            ).fetchone()
-            if row is None or row["state"] != "approved" or row["enforcement_job_id"]:
+            ).fetchall()
+            if len(rows) != 1:
+                raise M8DataError("deployment approval lineage is ambiguous")
+            row = rows[0]
+            canonical = _canonical_deployment_request(
+                connection, assessment_result_id=row["assessment_result_id"],
+                target_id=row["target_id"], control_id=row["control_id"],
+                sandbox_session_id=row["sandbox_session_id"],
+            )
+            if (canonical is None or canonical["deployment_id"] != row["deployment_id"]
+                    or row["state"] != "approved"
+                    or row["approval_decision"] != "approved"
+                    or row["enforcement_job_id"]):
                 raise M8DataError("deployment is not awaiting controlled execution")
             evidence = self.controller.get_sandbox_validation_evidence(
                 sandbox_session_id=UUID(row["sandbox_session_id"]),
@@ -691,6 +724,44 @@ class M8Repository:
                 raise M8DataError("reviewed sandbox result is not validated")
             return dict(row)
 
+    def linked_enforcement_job(self, deployment_id: UUID | str) -> str | None:
+        """Read an already-linked M7 job without invoking Controller creation."""
+        identifier = _uuid(deployment_id)
+        with open_db(self.database_path) as connection:
+            request = connection.execute(
+                """SELECT d.*, a.profile_id, l.compatibility_report_id
+                   FROM m8_deployment_requests d
+                   JOIN m8_assessment_results r
+                     ON r.assessment_result_id=d.assessment_result_id
+                   JOIN m8_assessments a ON a.assessment_id=r.assessment_id
+                   JOIN m8_assessment_report_links l ON l.assessment_id=a.assessment_id
+                   WHERE d.deployment_id=?""",
+                (identifier,),
+            ).fetchone()
+            if request is None:
+                raise M8DataError("deployment request does not exist")
+            if request["enforcement_job_id"] is None:
+                return None
+            approvals = connection.execute(
+                "SELECT * FROM m8_approvals WHERE deployment_id=?", (identifier,),
+            ).fetchall()
+            if len(approvals) != 1 or approvals[0]["decision"] != "approved":
+                raise M8DataError("linked deployment approval is invalid")
+            job = self.controller.get_enforcement_job(
+                UUID(_uuid(request["enforcement_job_id"]))
+            )
+            if (job is None or request["state"] != "approved"
+                    or job.target_id != UUID(request["target_id"])
+                    or job.profile_id != UUID(request["profile_id"])
+                    or job.compatibility_report_id
+                       != UUID(request["compatibility_report_id"])
+                    or job.sandbox_session_id != UUID(request["sandbox_session_id"])
+                    or job.control_id != request["control_id"]
+                    or job.sandbox_evidence_sha256
+                       != approvals[0]["validation_evidence_sha256"]):
+                raise M8DataError("linked M7 job lineage is invalid")
+            return str(job.enforcement_job_id)
+
     def create_deployment_request(
         self, *, assessment_result_id: UUID | str,
         sandbox_session_id: UUID | str, deployment_id: UUID | None = None,
@@ -700,6 +771,7 @@ class M8Repository:
 
         result_id, session_id = map(_uuid, (assessment_result_id, sandbox_session_id))
         with open_db(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             if requested_by_user_id is not None:
                 actor_id = _uuid(requested_by_user_id)
                 actor = connection.execute(
@@ -721,6 +793,13 @@ class M8Repository:
                 raise M8DataError("assessment and stored M4 report are not linked")
             if linked["control_id"] != "7.1.1":
                 raise M8DataError("M7 supports only control 7.1.1")
+            existing = _canonical_deployment_request(
+                connection, assessment_result_id=result_id,
+                target_id=linked["target_id"], control_id=linked["control_id"],
+                sandbox_session_id=session_id,
+            )
+            if existing is not None:
+                return dict(existing)
             session = self.controller.get_sandbox_session(
                 target_id=UUID(linked["target_id"]),
                 profile_id=UUID(linked["profile_id"]),
@@ -775,8 +854,10 @@ class M8Repository:
 
         if decision not in {"approved", "rejected"}:
             raise M8DataError("approval decision is invalid")
+        normalized_reason = _text(reason, field="approval reason", limit=2048)
         identifier = _uuid(approval_id or uuid4())
         with open_db(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             request = connection.execute(
                 "SELECT * FROM m8_deployment_requests WHERE deployment_id = ?",
                 (_uuid(deployment_id),),
@@ -787,8 +868,28 @@ class M8Repository:
                    AND u.active = 1 AND r.role_name = 'admin'""",
                 (_uuid(user_id),),
             ).fetchone()
-            if request is None or request["state"] != "awaiting_approval" or user is None:
-                raise M8DataError("active admin and pending deployment request required")
+            if request is None or user is None:
+                raise M8DataError("active admin and deployment request required")
+            existing = connection.execute(
+                "SELECT * FROM m8_approvals WHERE deployment_id=? "
+                "ORDER BY decided_at, approval_id",
+                (_uuid(deployment_id),),
+            ).fetchall()
+            if existing:
+                if (len(existing) != 1 or request["state"] != existing[0]["decision"]
+                        or existing[0]["decision"] != decision
+                        or existing[0]["reason"] != normalized_reason
+                        or existing[0]["user_id"] != _uuid(user_id)):
+                    raise M8DataError("deployment decision conflicts with recorded approval")
+                return dict(existing[0])
+            canonical = _canonical_deployment_request(
+                connection, assessment_result_id=request["assessment_result_id"],
+                target_id=request["target_id"], control_id=request["control_id"],
+                sandbox_session_id=request["sandbox_session_id"],
+            )
+            if (request["state"] != "awaiting_approval" or canonical is None
+                    or canonical["deployment_id"] != request["deployment_id"]):
+                raise M8DataError("deployment is not the canonical pending request")
             evidence = self.controller.get_sandbox_validation_evidence(
                 sandbox_session_id=UUID(request["sandbox_session_id"]),
             )
@@ -812,7 +913,7 @@ class M8Repository:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (identifier, _uuid(deployment_id), request["target_id"],
                  request["control_id"], _uuid(user_id), decision,
-                 _text(reason, field="approval reason", limit=2048), digest, now),
+                 normalized_reason, digest, now),
             )
             changed = connection.execute(
                 "UPDATE m8_deployment_requests SET state = ?, updated_at = ? "
@@ -843,6 +944,7 @@ class M8Repository:
         if job is None:
             raise M8DataError("M7 enforcement job does not exist")
         with open_db(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             request = connection.execute(
                 """SELECT d.*, a.profile_id, l.compatibility_report_id
                    FROM m8_deployment_requests d
@@ -852,24 +954,39 @@ class M8Repository:
                    JOIN m8_assessment_report_links l ON l.assessment_id = a.assessment_id
                    WHERE d.deployment_id = ?""", (_uuid(deployment_id),),
             ).fetchone()
-            approval = connection.execute(
-                "SELECT validation_evidence_sha256 FROM m8_approvals "
-                "WHERE deployment_id = ? AND decision = 'approved'",
+            approvals = connection.execute(
+                "SELECT validation_evidence_sha256,decision FROM m8_approvals "
+                "WHERE deployment_id = ?",
                 (_uuid(deployment_id),),
-            ).fetchone()
-            if request is None or approval is None or request["state"] != "approved" or (
+            ).fetchall()
+            if (request is None or len(approvals) != 1
+                    or approvals[0]["decision"] != "approved"
+                    or request["state"] != "approved"):
+                raise M8DataError("deployment approval is invalid")
+            if (
                 job.target_id != UUID(request["target_id"])
                 or job.profile_id != UUID(request["profile_id"])
                 or job.compatibility_report_id
                 != UUID(request["compatibility_report_id"])
                 or job.sandbox_session_id != UUID(request["sandbox_session_id"])
                 or job.control_id != request["control_id"]
-                or job.sandbox_evidence_sha256 != approval["validation_evidence_sha256"]
+                or job.sandbox_evidence_sha256 != approvals[0]["validation_evidence_sha256"]
                 or job.administrator_enforcement_approval_acknowledged is not True
                 or job.status not in {JobStatus.PENDING, JobStatus.DISPATCHED,
                                      JobStatus.COMPLETED}
             ):
                 raise M8DataError("M7 job does not match this approved request")
+            if request["enforcement_job_id"] is not None:
+                if request["enforcement_job_id"] == str(job.enforcement_job_id):
+                    return
+                raise M8DataError("deployment already links a different M7 job")
+            canonical = _canonical_deployment_request(
+                connection, assessment_result_id=request["assessment_result_id"],
+                target_id=request["target_id"], control_id=request["control_id"],
+                sandbox_session_id=request["sandbox_session_id"],
+            )
+            if canonical is None or canonical["deployment_id"] != request["deployment_id"]:
+                raise M8DataError("deployment is not the canonical approved request")
             changed = connection.execute(
                 "UPDATE m8_deployment_requests SET enforcement_job_id = ?, updated_at = ? "
                 "WHERE deployment_id = ? AND enforcement_job_id IS NULL",

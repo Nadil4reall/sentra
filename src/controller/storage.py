@@ -3382,6 +3382,21 @@ class SQLiteControllerRepository:
                 if any(getattr(existing, field) != getattr(job, field) for field in fields):
                     raise StorageConflictError("enforcement request replay conflicts")
                 return existing
+            active_rows = connection.execute(
+                """SELECT * FROM enforcement_jobs
+                   WHERE target_id=? AND profile_id=? AND compatibility_report_id=?
+                     AND sandbox_session_id=? AND control_id=?
+                     AND status IN ('pending', 'dispatched')""",
+                (str(job.target_id), str(job.profile_id),
+                 str(job.compatibility_report_id), str(job.sandbox_session_id),
+                 job.control_id),
+            ).fetchall()
+            for active_row in active_rows:
+                self._enforcement_job_from_row(connection, active_row)
+            if active_rows:
+                raise StorageConflictError(
+                    "another active enforcement job already owns this lineage"
+                )
             self._require_enforcement_evidence(connection, job)
             try:
                 connection.execute(
