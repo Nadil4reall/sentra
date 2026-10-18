@@ -1,6 +1,7 @@
 """Hand-authored Milestone 5 control adapters."""
 
 from .base import AdapterContext, ControlAdapter
+from .ip_forwarding import IpForwardingAdapter
 from .passwd_permissions import PasswdPermissionsAdapter
 from .ssh_root_login import SshRootLoginAdapter
 from .ufw_service import UfwServiceAdapter
@@ -11,6 +12,7 @@ def adapter_registry() -> dict[str, ControlAdapter]:
 
     adapters: tuple[ControlAdapter, ...] = (
         PasswdPermissionsAdapter(),
+        IpForwardingAdapter(),
         SshRootLoginAdapter(),
         UfwServiceAdapter(),
     )
@@ -20,6 +22,7 @@ def adapter_registry() -> dict[str, ControlAdapter]:
 __all__ = [
     "AdapterContext",
     "ControlAdapter",
+    "IpForwardingAdapter",
     "PasswdPermissionsAdapter",
     "SshRootLoginAdapter",
     "UfwServiceAdapter",

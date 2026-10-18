@@ -25,6 +25,7 @@ from .models import CompatibilityReference
 
 _CONTROL_ID = re.compile(r"^\d+(?:\.\d+){2,}$")
 _ADAPTER_TITLES = {
+    "3.3.1": "Ensure ip forwarding is disabled",
     "7.1.1": "Ensure permissions on /etc/passwd are configured",
     "5.1.20": "Ensure sshd PermitRootLogin is disabled",
     "4.2.3": "Ensure ufw service is enabled",

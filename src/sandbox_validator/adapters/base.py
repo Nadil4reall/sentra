@@ -70,6 +70,16 @@ class FileOperations(Protocol):
         mode: int,
     ) -> None: ...
 
+    def create_exclusive_text(
+        self,
+        path: Path,
+        content: str,
+        *,
+        uid: int,
+        gid: int,
+        mode: int,
+    ) -> None: ...
+
     def remove_file(self, path: Path) -> None: ...
 
 
@@ -233,6 +243,8 @@ class SystemFileOperations:
             view = memoryview(data)
             while view:
                 written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("fixed file write made no progress")
                 view = view[written:]
             os.fchown(descriptor, uid, gid)
             os.fchmod(descriptor, mode)
@@ -246,6 +258,52 @@ class SystemFileOperations:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    def create_exclusive_text(
+        self,
+        path: Path,
+        content: str,
+        *,
+        uid: int,
+        gid: int,
+        mode: int,
+    ) -> None:
+        """Create a fixed-path file without replacing a concurrent occupant."""
+
+        if uid < 0 or gid < 0 or mode < 0 or mode > 0o7777:
+            raise ValueError("invalid file metadata target")
+        self._require_real_owned_directory(path.parent)
+        descriptor = os.open(
+            path,
+            self._safe_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+            0o600,
+        )
+        created: os.stat_result | None = None
+        try:
+            created = os.fstat(descriptor)
+            data = content.encode("utf-8")
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("fixed file write made no progress")
+                view = view[written:]
+            os.fchown(descriptor, uid, gid)
+            os.fchmod(descriptor, mode)
+            os.fsync(descriptor)
+        except BaseException:
+            try:
+                current = path.lstat()
+                if created is not None and (
+                    current.st_dev,
+                    current.st_ino,
+                ) == (created.st_dev, created.st_ino):
+                    path.unlink()
+            except OSError:
+                pass
+            raise
+        finally:
+            os.close(descriptor)
 
     def remove_file(self, path: Path) -> None:
         snapshot = self.snapshot(path)
