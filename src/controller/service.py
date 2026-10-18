@@ -1078,6 +1078,10 @@ class ControllerService:
         request: ValidationJobCreateRequest,
     ) -> ValidationJobRecord:
         """Legacy Agent-owned M6D path; sandbox jobs use the atomic entry point."""
+        if type(request) is not ValidationJobCreateRequest or request.control_id != "7.1.1":
+            raise ControllerConflictError(
+                "this control requires Controller-owned sandbox validation"
+            )
         job = self._build_authorized_validation_job(auth, request)
         try:
             return self._repository.create_validation_job(job)

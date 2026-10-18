@@ -261,7 +261,7 @@ class ValidationJobCreateRequest(StrictControllerModel):
     target_id: UUID
     profile_id: UUID
     compatibility_report_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
     execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
     administrator_approval_acknowledged: Literal[True]
@@ -278,7 +278,7 @@ class ValidationJobRecord(StrictControllerModel):
     profile_id: UUID
     compatibility_report_id: UUID
     job_type: Literal[JobType.VALIDATE_CONTROL] = JobType.VALIDATE_CONTROL
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
     execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
     administrator_approval_acknowledged: Literal[True]
@@ -475,7 +475,7 @@ class SandboxSessionCreateRequest(StrictControllerModel):
     """
 
     request_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     administrator_sandbox_authorization_acknowledged: Literal[True]
 
 
@@ -499,7 +499,7 @@ class SandboxSessionRecord(StrictControllerModel):
     source_target_id: UUID
     source_profile_id: UUID
     source_compatibility_report_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     provider_type: Literal[
         SandboxProviderType.LOCAL_NESTED_VM
     ] = SandboxProviderType.LOCAL_NESTED_VM
@@ -638,7 +638,7 @@ class ValidationResultPayload(StrictControllerModel):
     profile_id: UUID
     compatibility_report_id: UUID
     validation_job_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     validation_mode: Literal[ValidationMode.SANDBOX] = ValidationMode.SANDBOX
     execution_mode: Literal[ExecutionMode.EXECUTE] = ExecutionMode.EXECUTE
     report: ValidationReport

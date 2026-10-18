@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -16,6 +17,8 @@ import pytest
 from pydantic import ValidationError
 
 from src import sandbox_m5_validation
+from src import sandbox_m5_session as guest_session
+from src.compatibility_engine.models import CompatibilityDecision
 from src.controller.models import (
     JobStatus, ValidationJobCreateRequest, ValidationJobRecord, ValidationResultPayload,
 )
@@ -31,6 +34,7 @@ from src.sandbox_m5_protocol import context as context_binding
 from src.poc_models import DerivationStatus
 from src.sandbox_m5_session import SandboxM5SessionError, run_sandbox_m5_session
 from src.sandbox_protocol import (
+    IpForwardingSourceState,
     MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES,
     SandboxContextAcknowledgement,
     SandboxContextManifest,
@@ -52,7 +56,10 @@ from src.sandbox_m5_protocol.transport import (
     encode_sandbox_m5_result_frame,
 )
 from src.sandbox_runtime import reproduction
-from src.sandbox_runtime.reproduction import SandboxPasswdReproductionResult
+from src.sandbox_runtime.reproduction import (
+    SandboxIpForwardingReproductionResult,
+    SandboxPasswdReproductionResult,
+)
 from src.sandbox_validator.adapters.base import AdapterContext, FileSnapshot
 from src.sandbox_validator.adapters.passwd_permissions import PasswdPermissionsAdapter
 from src.sandbox_validator.models import (
@@ -388,6 +395,141 @@ def test_context_and_ack_wire_bytes_remain_the_existing_protocol() -> None:
         b'"passwd_file_owner_uid":0}}'
     )
     assert MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES == 4096
+
+
+def _forwarding_manifest(*, ipv4: int = 1) -> SandboxContextManifest:
+    return SandboxContextManifest(
+        context_version="1",
+        control_id="3.3.1",
+        source_state=IpForwardingSourceState(
+            ipv4_forwarding_status=ipv4,
+            ipv6_enabled=True,
+            ipv6_forwarding_status=1,
+        ),
+    )
+
+
+def _forwarding_job() -> ValidationJobRecord:
+    reference = _compatibility().model_copy(update={
+        "control_id": "3.3.1",
+        "result": CompatibilityDecision.NO_KNOWN_CONFLICT,
+    })
+    return _job().model_copy(update={
+        "control_id": "3.3.1",
+        "compatibility_reference": reference,
+    })
+
+
+def test_forwarding_authorization_binds_selected_manifest_and_job() -> None:
+    job = _forwarding_job()
+    manifest = _forwarding_manifest()
+
+    authorization = build_sandbox_m5_authorization(job, manifest)
+
+    assert authorization.control_id == "3.3.1"
+    assert authorization.context_sha256 == sandbox_context_sha256(manifest)
+    assert decode_sandbox_m5_authorization_frame(
+        encode_sandbox_m5_authorization_frame(authorization)
+    ) == authorization
+    assert sandbox_context_sha256(manifest) != sandbox_context_sha256(
+        _forwarding_manifest(ipv4=0)
+    )
+    with pytest.raises(SandboxM5ControllerError):
+        build_sandbox_m5_authorization(_job(), manifest)
+
+
+def test_forwarding_context_hash_mismatch_stops_before_reproduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _forwarding_manifest(ipv4=0)
+    authorization = build_sandbox_m5_authorization(
+        _forwarding_job(), _forwarding_manifest(ipv4=1)
+    )
+    stream = _MemoryDuplex(
+        encode_sandbox_context_frame(manifest)
+        + encode_sandbox_m5_authorization_frame(authorization)
+    )
+    reproduced: list[str] = []
+    monkeypatch.setattr(
+        guest_session,
+        "reproduce_ip_forwarding_source_state",
+        lambda _manifest: reproduced.append("called"),
+    )
+
+    with pytest.raises(SandboxM5SessionError, match="lineage"):
+        run_sandbox_m5_session(stream, sandbox_operator_acknowledged=True)
+
+    assert reproduced == []
+    ack_frame, remaining = _split_frame(bytes(stream.outgoing))
+    assert decode_sandbox_acknowledgement_frame(ack_frame).status == "accepted"
+    assert remaining == b""
+
+
+def test_forwarding_result_round_trip_and_controller_source_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline, _stream, _observed, _files, _reproduction_fs = _run_guest(
+        monkeypatch, tmp_path, sandbox_operator_acknowledged=True
+    )
+    job = _forwarding_job()
+    manifest = _forwarding_manifest()
+    reference = job.compatibility_reference
+    base_control = baseline.report.control_results[0]
+    precheck = base_control.precheck.model_copy(update={
+        "control_id": "3.3.1", "compatibility": reference,
+    })
+    control = base_control.model_copy(update={
+        "control_id": "3.3.1",
+        "control_title": "Ensure ip forwarding is disabled",
+        "m4_input": reference,
+        "precheck": precheck,
+    })
+    report = baseline.report.model_copy(update={"control_results": [control]})
+    reproduced = SandboxIpForwardingReproductionResult(
+        control_id="3.3.1",
+        before_ipv4=0,
+        requested_ipv4=1,
+        after_ipv4=1,
+        ipv6_enabled=True,
+        before_ipv6=0,
+        requested_ipv6=1,
+        after_ipv6=1,
+        reproduced=True,
+    )
+    result = SandboxM5SessionResult(
+        validation_job_id=job.validation_job_id,
+        profile_id=job.profile_id,
+        compatibility_report_id=job.compatibility_report_id,
+        context_sha256=sandbox_context_sha256(manifest),
+        control_id="3.3.1",
+        reproduction=reproduced,
+        report=report,
+    )
+
+    assert decode_sandbox_m5_result_frame(
+        encode_sandbox_m5_result_frame(result)
+    ) == result
+    payload = sandbox_m5_result_to_validation_payload(job, result, manifest)
+    assert payload.control_id == "3.3.1"
+    assert payload.validation_job_id == job.validation_job_id
+
+    altered = result.model_copy(update={
+        "reproduction": replace(reproduced, requested_ipv4=0, after_ipv4=0)
+    })
+    with pytest.raises(SandboxM5ControllerError, match="source-state"):
+        sandbox_m5_result_to_validation_payload(job, altered, manifest)
+
+    with pytest.raises(ValidationError):
+        SandboxM5SessionResult(
+            validation_job_id=job.validation_job_id,
+            profile_id=job.profile_id,
+            compatibility_report_id=job.compatibility_report_id,
+            context_sha256=sandbox_context_sha256(manifest),
+            control_id="3.3.1",
+            reproduction=baseline.reproduction,
+            report=report,
+        )
 
 
 def test_context_fingerprint_hashes_only_the_existing_canonical_frame(

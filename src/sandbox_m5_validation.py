@@ -23,11 +23,12 @@ from src.sandbox_validator.models import (
 from src.sandbox_validator.validator import SandboxValidator, ValidationRequest
 from src.sandbox_runtime.reproduction import (
     SANDBOX_PASSWD_TARGET_PATH,
+    SandboxIpForwardingReproductionResult,
     SandboxPasswdReproductionResult,
 )
 
 
-_CONTROL_ID: Literal["7.1.1"] = "7.1.1"
+_SUPPORTED_CONTROL_IDS = frozenset({"7.1.1", "3.3.1"})
 _MODE_PATTERN = re.compile(r"[0-7]{4}\Z")
 _FIXED_ERROR_MESSAGE = "sandbox M5 validation input was rejected"
 
@@ -37,7 +38,7 @@ class SandboxM5ValidationInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     administrator_approval_acknowledged: StrictBool
     sandbox_operator_acknowledged: StrictBool
     compatibility_risk_acknowledged: StrictBool
@@ -47,7 +48,7 @@ class SandboxM5ValidationInput(BaseModel):
     @model_validator(mode="after")
     def validate_compatibility_control(self) -> "SandboxM5ValidationInput":
         if self.compatibility_reference.control_id != self.control_id:
-            raise ValueError("M4 compatibility reference must match control 7.1.1")
+            raise ValueError("M4 compatibility reference must match selected control")
         return self
 
 
@@ -56,30 +57,59 @@ class SandboxM5ValidationError(RuntimeError):
 
 
 def _validate_reproduction(
-    result: SandboxPasswdReproductionResult,
-) -> None:
-    if type(result) is not SandboxPasswdReproductionResult:
-        raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
-    if (
-        result.control_id != _CONTROL_ID
-        or result.target_path != SANDBOX_PASSWD_TARGET_PATH
-        or result.reproduced is not True
-    ):
-        raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
-    if (
-        type(result.requested_mode) is not str
-        or _MODE_PATTERN.fullmatch(result.requested_mode) is None
-        or result.after_mode != result.requested_mode
-        or type(result.requested_uid) is not int
-        or result.requested_uid < 0
-        or type(result.requested_gid) is not int
-        or result.requested_gid < 0
-        or type(result.after_uid) is not int
-        or result.after_uid != result.requested_uid
-        or type(result.after_gid) is not int
-        or result.after_gid != result.requested_gid
-    ):
-        raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
+    result: SandboxPasswdReproductionResult | SandboxIpForwardingReproductionResult,
+) -> str:
+    if type(result) is SandboxPasswdReproductionResult:
+        if (
+            result.control_id != "7.1.1"
+            or result.target_path != SANDBOX_PASSWD_TARGET_PATH
+            or result.reproduced is not True
+            or type(result.requested_mode) is not str
+            or _MODE_PATTERN.fullmatch(result.requested_mode) is None
+            or result.after_mode != result.requested_mode
+            or type(result.requested_uid) is not int
+            or result.requested_uid < 0
+            or type(result.requested_gid) is not int
+            or result.requested_gid < 0
+            or type(result.after_uid) is not int
+            or result.after_uid != result.requested_uid
+            or type(result.after_gid) is not int
+            or result.after_gid != result.requested_gid
+        ):
+            raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
+        return "7.1.1"
+    if type(result) is SandboxIpForwardingReproductionResult:
+        if (
+            result.control_id != "3.3.1"
+            or result.reproduced is not True
+            or type(result.before_ipv4) is not int
+            or result.before_ipv4 not in {0, 1}
+            or type(result.requested_ipv4) is not int
+            or result.requested_ipv4 not in {0, 1}
+            or result.after_ipv4 != result.requested_ipv4
+            or type(result.ipv6_enabled) is not bool
+            or (
+                result.ipv6_enabled
+                and (
+                    type(result.before_ipv6) is not int
+                    or result.before_ipv6 not in {0, 1}
+                    or type(result.requested_ipv6) is not int
+                    or result.requested_ipv6 not in {0, 1}
+                    or result.after_ipv6 != result.requested_ipv6
+                )
+            )
+            or (
+                not result.ipv6_enabled
+                and (
+                    result.before_ipv6 is not None
+                    or result.requested_ipv6 is not None
+                    or result.after_ipv6 is not None
+                )
+            )
+        ):
+            raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
+        return "3.3.1"
+    raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
 
 
 def _validate_authorization(
@@ -94,22 +124,27 @@ def _validate_authorization(
 
 
 def run_m5_validation_after_reproduction(
-    reproduction: SandboxPasswdReproductionResult,
+    reproduction: SandboxPasswdReproductionResult | SandboxIpForwardingReproductionResult,
     authorization: SandboxM5ValidationInput,
 ) -> ValidationReport:
-    """Run fixed 7.1.1 M5 library logic only after successful reproduction.
+    """Run one allowlisted M5 adapter only after successful reproduction.
 
     The guest appliance entrypoint intentionally does not call this function in
     this integration slice. Its production context is always the guest root.
     """
 
-    _validate_reproduction(reproduction)
+    reproduced_control_id = _validate_reproduction(reproduction)
     validated_authorization = _validate_authorization(authorization)
+    if (
+        reproduced_control_id != validated_authorization.control_id
+        or reproduced_control_id not in _SUPPORTED_CONTROL_IDS
+    ):
+        raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
 
-    loaded_inputs = load_validation_inputs("7.1.1")
+    loaded_inputs = load_validation_inputs(reproduced_control_id)
     if (
         type(loaded_inputs) is not ValidationInputs
-        or loaded_inputs.control_id != _CONTROL_ID
+        or loaded_inputs.control_id != reproduced_control_id
     ):
         raise SandboxM5ValidationError(_FIXED_ERROR_MESSAGE)
 
@@ -120,7 +155,7 @@ def run_m5_validation_after_reproduction(
         compatibility=compatibility,
     )
     request = ValidationRequest(
-        control_id="7.1.1",
+        control_id=reproduced_control_id,
         mode=ExecutionMode.EXECUTE,
         sandbox_operator_acknowledged=(
             validated_authorization.sandbox_operator_acknowledged

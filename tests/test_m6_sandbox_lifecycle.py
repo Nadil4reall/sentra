@@ -50,6 +50,7 @@ from src.controller.storage import (
     SQLiteControllerRepository,
     StorageConflictError,
 )
+from src.controller import storage as controller_storage
 from src.controller.transport import ControllerHTTPSApplication
 from src.target_profiler.models import TargetProfile
 
@@ -206,6 +207,65 @@ def _validation_request(enrollment, stored_profile, report):
             else None
         ),
     )
+
+
+def test_3_3_1_validation_job_is_reserved_only_for_controller_sandbox(
+    tmp_path: Path,
+) -> None:
+    _database, repository, service = _controller(tmp_path)
+    enrollment, profile, report = _stored_profile_and_report(service)
+    selected = next(
+        item for item in report.report.control_results if item.control_id == "3.3.1"
+    )
+    request = ValidationJobCreateRequest(
+        request_id=uuid4(),
+        target_id=enrollment.target_id,
+        profile_id=profile.profile_id,
+        compatibility_report_id=report.compatibility_report_id,
+        control_id="3.3.1",
+        administrator_approval_acknowledged=True,
+        compatibility_risk_acknowledged=(
+            selected.result is not CompatibilityDecision.NO_KNOWN_CONFLICT
+        ),
+        compatibility_override_reason=(
+            "Administrator reviewed missing 3.3.1 compatibility evidence."
+            if selected.result is CompatibilityDecision.INSUFFICIENT_EVIDENCE
+            else None
+        ),
+    )
+    with pytest.raises(ControllerConflictError, match="Controller-owned sandbox"):
+        service.create_validation_job(_admin(), request)
+
+    session = service.create_sandbox_session(
+        _admin(),
+        target_id=enrollment.target_id,
+        profile_id=profile.profile_id,
+        compatibility_report_id=report.compatibility_report_id,
+        request=SandboxSessionCreateRequest(
+            request_id=uuid4(),
+            control_id="3.3.1",
+            administrator_sandbox_authorization_acknowledged=True,
+        ),
+    )
+    service.mark_provisioning(session.sandbox_session_id)
+    service.mark_ready(
+        session.sandbox_session_id,
+        sandbox_instance_id=f"m9-test-{session.sandbox_session_id}",
+    )
+
+    job, validating = service.create_and_dispatch_sandbox_validation_job(
+        _admin(), sandbox_session_id=session.sandbox_session_id, request=request
+    )
+
+    assert job.control_id == "3.3.1"
+    assert job.status.value == "dispatched"
+    assert validating.control_id == "3.3.1"
+    assert validating.status is SandboxSessionStatus.VALIDATING
+    stored = repository.get_validation_job(job.validation_job_id)
+    assert stored is not None
+    assert stored.job.control_id == "3.3.1"
+    assert stored.job.request_id == job.request_id
+    assert stored.assigned_agent_id is None
 
 
 @pytest.mark.parametrize(
@@ -816,10 +876,26 @@ def test_populated_m6d_database_migrates_without_rewriting_existing_evidence(
         validation_job.validation_job_id,
     )
 
-    # This reconstructs the exact pre-M6E table set while leaving populated M6D
-    # identity, profile, compatibility, and validation evidence in place.
+    # Reconstruct a genuine pre-M9 set of exact 7.1.1-only constraints, then
+    # remove the M6E table. Existing M6D evidence must survive both migrations.
     with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        for table in (
+            "validation_jobs", "validation_results",
+            "enforcement_jobs", "enforcement_results",
+        ):
+            old_sql = controller_storage._M9_CONTROL_SCHEMAS[table][0]
+            rows = connection.execute(f"SELECT * FROM {table}").fetchall()
+            column_count = len(connection.execute(f"PRAGMA table_info({table})").fetchall())
+            connection.execute(f"DROP TABLE {table}")
+            connection.execute(old_sql)
+            if rows:
+                placeholders = ",".join("?" for _ in range(column_count))
+                connection.executemany(
+                    f"INSERT INTO {table} VALUES ({placeholders})", rows
+                )
         connection.execute("DROP TABLE sandbox_sessions")
+        connection.execute("DROP TABLE controller_schema_migrations")
 
     migrated = SQLiteControllerRepository(database)
     migrated_profile = migrated.get_profile(stored_profile.profile_id)

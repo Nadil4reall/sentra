@@ -17,8 +17,10 @@ from src.sandbox_m5_protocol.transport import (
 )
 from src.sandbox_runtime.receiver import receive_one_context
 from src.sandbox_runtime.reproduction import (
+    SandboxIpForwardingReproductionResult,
     SandboxPasswdReproductionResult,
     SandboxStateReproductionError,
+    reproduce_ip_forwarding_source_state,
     reproduce_passwd_source_state,
 )
 from src.sandbox_validator.models import ExecutionMode, ValidationReport
@@ -33,7 +35,7 @@ def run_sandbox_m5_session(
     *,
     sandbox_operator_acknowledged: bool,
 ) -> SandboxM5SessionResult:
-    """Receive one context and authorization, then run the fixed 7.1.1 M5 path."""
+    """Receive one context and authorization, then run the selected fixed M5 path."""
 
     if type(sandbox_operator_acknowledged) is not bool:
         raise SandboxM5SessionError("sandbox M5 session was rejected")
@@ -62,8 +64,15 @@ def run_sandbox_m5_session(
         raise SandboxM5SessionError("sandbox M5 context lineage was rejected")
 
     try:
-        reproduction = reproduce_passwd_source_state(received.manifest)
-        if type(reproduction) is not SandboxPasswdReproductionResult:
+        if authorization.control_id == "7.1.1":
+            reproduction = reproduce_passwd_source_state(received.manifest)
+            expected_result_type = SandboxPasswdReproductionResult
+        elif authorization.control_id == "3.3.1":
+            reproduction = reproduce_ip_forwarding_source_state(received.manifest)
+            expected_result_type = SandboxIpForwardingReproductionResult
+        else:
+            raise SandboxM5SessionError("sandbox M5 control was rejected")
+        if type(reproduction) is not expected_result_type:
             raise SandboxStateReproductionError("sandbox source-state reproduction failed")
         m5_authorization = SandboxM5ValidationInput(
             control_id=authorization.control_id,

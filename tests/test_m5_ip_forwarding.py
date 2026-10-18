@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from src import sandbox_m5_validation
+from src.compatibility_engine.models import CompatibilityDecision
+from src.poc_models import DerivationStatus
+from src.sandbox_m5_validation import (
+    SandboxM5ValidationInput,
+    run_m5_validation_after_reproduction,
+)
+from src.sandbox_runtime.reproduction import SandboxIpForwardingReproductionResult
 from src.sandbox_validator.adapters import adapter_registry
 from src.sandbox_validator.adapters.base import (
     AdapterContext,
@@ -16,7 +27,15 @@ from src.sandbox_validator.command_runner import (
     MutationAuthorization,
     ReadAction,
 )
-from src.sandbox_validator.models import ActionStatus, HealthStatus, ValidationDecision
+from src.sandbox_validator.models import (
+    ActionStatus,
+    CompatibilityReference,
+    HealthStatus,
+    SandboxIdentity,
+    ValidationDecision,
+)
+from src.sandbox_validator.validator import SandboxValidator
+from src.target_profiler.models import TargetInfo
 
 
 class RootlessTestFileOperations(SystemFileOperations):
@@ -477,3 +496,80 @@ def test_rollback_failure_is_visible(tmp_path: Path) -> None:
     assert outcome.rollback.succeeded is False
     assert runner.ipv4 == 0
     assert not (tmp_path / "etc/sysctl.d/99-sentra-3.3.1.conf").exists()
+
+
+def test_reproduced_3_3_1_context_reaches_real_m5_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeSysctlRunner(ipv4=1, ipv6=1)
+    local_context = _context(tmp_path, runner)
+    identity = SandboxIdentity(
+        hostname="isolated-test-sandbox",
+        os="Ubuntu",
+        version="24.04",
+        kernel="6.8.0-test",
+        architecture="x86_64",
+        architecture_supported=True,
+        effective_uid=0,
+        privileged=True,
+        supported=True,
+    )
+
+    def safe_validator(*, context: AdapterContext) -> SandboxValidator:
+        assert context.root == Path("/")
+        return SandboxValidator(
+            context=local_context,
+            identity_provider=lambda: identity,
+        )
+
+    monkeypatch.setattr(sandbox_m5_validation, "SandboxValidator", safe_validator)
+    now = datetime(2026, 10, 18, tzinfo=UTC)
+    compatibility = CompatibilityReference(
+        control_id="3.3.1",
+        report_source="controller-stored-compatibility-report:report-test",
+        report_sha256="a" * 64,
+        report_version="1",
+        report_generated_at=now,
+        profile_source="controller-stored-profile:profile-test",
+        profile_collected_at=now,
+        profile_target=TargetInfo(
+            hostname="isolated-test-sandbox",
+            os="Ubuntu",
+            os_version="24.04",
+            kernel="6.8.0-test",
+            architecture="x86_64",
+            supported=True,
+        ),
+        result=CompatibilityDecision.REVIEW_REQUIRED,
+        provisional=True,
+        metadata_review_status=DerivationStatus.NEEDS_REVIEW,
+        explanation="Deployment role needs administrator review.",
+    )
+    reproduction = SandboxIpForwardingReproductionResult(
+        control_id="3.3.1",
+        before_ipv4=0,
+        requested_ipv4=1,
+        after_ipv4=1,
+        ipv6_enabled=True,
+        before_ipv6=0,
+        requested_ipv6=1,
+        after_ipv6=1,
+        reproduced=True,
+    )
+    authorization = SandboxM5ValidationInput(
+        control_id="3.3.1",
+        administrator_approval_acknowledged=True,
+        sandbox_operator_acknowledged=True,
+        compatibility_risk_acknowledged=True,
+        compatibility_override_reason=None,
+        compatibility_reference=compatibility,
+    )
+
+    report = run_m5_validation_after_reproduction(reproduction, authorization)
+
+    assert report.control_results[0].control_id == "3.3.1"
+    assert report.control_results[0].result is ValidationDecision.VALIDATED
+    assert report.control_results[0].m4_input == compatibility
+    assert runner.ipv4 == 0
+    assert runner.ipv6 == 0

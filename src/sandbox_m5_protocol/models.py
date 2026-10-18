@@ -8,7 +8,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
-from src.sandbox_runtime.reproduction import SandboxPasswdReproductionResult
+from src.sandbox_runtime.reproduction import (
+    SandboxIpForwardingReproductionResult,
+    SandboxPasswdReproductionResult,
+)
 from src.sandbox_validator.models import CompatibilityReference, ExecutionMode, ValidationReport
 
 
@@ -20,7 +23,7 @@ class _StrictM5ProtocolModel(BaseModel):
 
 
 class SandboxM5ControllerAuthorization(_StrictM5ProtocolModel):
-    """Controller authorization for one fixed 7.1.1 sandbox experiment.
+    """Controller authorization for one allowlisted sandbox experiment.
 
     The sandbox-operator acknowledgement is intentionally local to the guest
     session and is never present in this Controller-supplied model.
@@ -31,7 +34,7 @@ class SandboxM5ControllerAuthorization(_StrictM5ProtocolModel):
     profile_id: UUID
     compatibility_report_id: UUID
     context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    control_id: Literal["7.1.1"] = "7.1.1"
+    control_id: Literal["7.1.1", "3.3.1"] = "7.1.1"
     administrator_approval_acknowledged: StrictBool
     compatibility_risk_acknowledged: StrictBool
     compatibility_override_reason: StrictStr | None
@@ -60,36 +63,66 @@ class SandboxM5SessionResult(_StrictM5ProtocolModel):
     profile_id: UUID
     compatibility_report_id: UUID
     context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    control_id: Literal["7.1.1"] = "7.1.1"
-    reproduction: SandboxPasswdReproductionResult
+    control_id: Literal["7.1.1", "3.3.1"] = "7.1.1"
+    reproduction: SandboxPasswdReproductionResult | SandboxIpForwardingReproductionResult
     report: ValidationReport
 
     @model_validator(mode="after")
     def validate_session_result(self) -> "SandboxM5SessionResult":
         reproduction = self.reproduction
-        if (
-            type(reproduction) is not SandboxPasswdReproductionResult
-            or reproduction.control_id != "7.1.1"
-            or reproduction.target_path != "/etc/passwd"
-            or reproduction.reproduced is not True
-            or type(reproduction.requested_mode) is not str
-            or _MODE_PATTERN.fullmatch(reproduction.requested_mode) is None
-            or reproduction.after_mode != reproduction.requested_mode
-            or type(reproduction.requested_uid) is not int
-            or reproduction.requested_uid < 0
-            or type(reproduction.requested_gid) is not int
-            or reproduction.requested_gid < 0
-            or type(reproduction.after_uid) is not int
-            or reproduction.after_uid != reproduction.requested_uid
-            or type(reproduction.after_gid) is not int
-            or reproduction.after_gid != reproduction.requested_gid
-            or type(reproduction.before_mode) is not str
-            or _MODE_PATTERN.fullmatch(reproduction.before_mode) is None
-            or type(reproduction.before_uid) is not int
-            or reproduction.before_uid < 0
-            or type(reproduction.before_gid) is not int
-            or reproduction.before_gid < 0
-        ):
+        if self.control_id == "7.1.1":
+            valid_reproduction = (
+                type(reproduction) is SandboxPasswdReproductionResult
+                and reproduction.control_id == "7.1.1"
+                and reproduction.target_path == "/etc/passwd"
+                and reproduction.reproduced is True
+                and type(reproduction.requested_mode) is str
+                and _MODE_PATTERN.fullmatch(reproduction.requested_mode) is not None
+                and reproduction.after_mode == reproduction.requested_mode
+                and type(reproduction.requested_uid) is int
+                and reproduction.requested_uid >= 0
+                and type(reproduction.requested_gid) is int
+                and reproduction.requested_gid >= 0
+                and type(reproduction.after_uid) is int
+                and reproduction.after_uid == reproduction.requested_uid
+                and type(reproduction.after_gid) is int
+                and reproduction.after_gid == reproduction.requested_gid
+                and type(reproduction.before_mode) is str
+                and _MODE_PATTERN.fullmatch(reproduction.before_mode) is not None
+                and type(reproduction.before_uid) is int
+                and reproduction.before_uid >= 0
+                and type(reproduction.before_gid) is int
+                and reproduction.before_gid >= 0
+            )
+        else:
+            valid_reproduction = (
+                type(reproduction) is SandboxIpForwardingReproductionResult
+                and reproduction.control_id == "3.3.1"
+                and reproduction.reproduced is True
+                and type(reproduction.before_ipv4) is int
+                and reproduction.before_ipv4 in {0, 1}
+                and type(reproduction.requested_ipv4) is int
+                and reproduction.requested_ipv4 in {0, 1}
+                and reproduction.after_ipv4 == reproduction.requested_ipv4
+                and type(reproduction.ipv6_enabled) is bool
+                and (
+                    (
+                        reproduction.ipv6_enabled
+                        and type(reproduction.before_ipv6) is int
+                        and reproduction.before_ipv6 in {0, 1}
+                        and type(reproduction.requested_ipv6) is int
+                        and reproduction.requested_ipv6 in {0, 1}
+                        and reproduction.after_ipv6 == reproduction.requested_ipv6
+                    )
+                    or (
+                        not reproduction.ipv6_enabled
+                        and reproduction.before_ipv6 is None
+                        and reproduction.requested_ipv6 is None
+                        and reproduction.after_ipv6 is None
+                    )
+                )
+            )
+        if not valid_reproduction:
             raise ValueError("result reproduction evidence is invalid")
 
         try:

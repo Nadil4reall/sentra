@@ -12,7 +12,7 @@ from src.controller.models import (
 from src.sandbox_validator.models import CompatibilityReference
 
 
-M6D_SUPPORTED_CONTROL_IDS = frozenset({"7.1.1"})
+M6D_SUPPORTED_CONTROL_IDS = frozenset({"7.1.1", "3.3.1"})
 
 
 def compatibility_reference_from_record(

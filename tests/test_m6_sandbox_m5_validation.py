@@ -610,5 +610,6 @@ def test_runner_reuses_existing_m5_and_adds_no_agent_or_execution_surface() -> N
     )
     assert "SandboxValidator" in source
     assert "ValidationRequest" in source
-    assert "load_validation_inputs(\"7.1.1\")" in source
+    assert "load_validation_inputs(reproduced_control_id)" in source
+    assert '_SUPPORTED_CONTROL_IDS = frozenset({"7.1.1", "3.3.1"})' in source
     assert "PasswdPermissionsAdapter" not in source

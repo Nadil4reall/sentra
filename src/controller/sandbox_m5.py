@@ -19,13 +19,19 @@ from src.controller.models import (
 from src.controller.service import ControllerService
 from src.controller.validation import require_payload_matches_job
 from src.sandbox_protocol import (
+    IpForwardingSourceState,
     MAX_SANDBOX_CONTEXT_PAYLOAD_BYTES,
+    PasswdSourceState,
     SandboxContextAcknowledgement,
     SandboxContextManifest,
     SandboxTransportError,
     decode_sandbox_acknowledgement_frame,
     decode_sandbox_context_frame,
     encode_sandbox_context_frame,
+)
+from src.sandbox_runtime.reproduction import (
+    SandboxIpForwardingReproductionResult,
+    SandboxPasswdReproductionResult,
 )
 from src.sandbox_m5_protocol.context import sandbox_context_sha256
 from src.sandbox_m5_protocol.models import (
@@ -61,7 +67,7 @@ def build_sandbox_m5_authorization(
     except (ValidationError, ValueError, TypeError):
         raise SandboxM5ControllerError("M5 authorization job was rejected") from None
     if (
-        validated_job.control_id != "7.1.1"
+        validated_job.control_id not in {"7.1.1", "3.3.1"}
         or validated_job.status is not JobStatus.DISPATCHED
         or validated_job.dispatched_at is None
     ):
@@ -81,7 +87,7 @@ def build_sandbox_m5_authorization(
             profile_id=validated_job.profile_id,
             compatibility_report_id=validated_job.compatibility_report_id,
             context_sha256=context_sha256,
-            control_id="7.1.1",
+            control_id=validated_job.control_id,
             administrator_approval_acknowledged=(
                 validated_job.administrator_approval_acknowledged
             ),
@@ -132,8 +138,29 @@ def sandbox_m5_result_to_validation_payload(
         != validated_job.compatibility_report_id
         or validated_result.control_id != validated_job.control_id
         or validated_result.context_sha256 != expected_context_sha256
+        or manifest.control_id != validated_result.control_id
     ):
         raise SandboxM5ControllerError("M5 session lineage was rejected")
+    source = manifest.source_state
+    reproduction = validated_result.reproduction
+    if validated_result.control_id == "7.1.1":
+        source_matches = (
+            type(source) is PasswdSourceState
+            and type(reproduction) is SandboxPasswdReproductionResult
+            and reproduction.requested_mode == source.passwd_file_mode
+            and reproduction.requested_uid == source.passwd_file_owner_uid
+            and reproduction.requested_gid == source.passwd_file_group_gid
+        )
+    else:
+        source_matches = (
+            type(source) is IpForwardingSourceState
+            and type(reproduction) is SandboxIpForwardingReproductionResult
+            and reproduction.requested_ipv4 == source.ipv4_forwarding_status
+            and reproduction.ipv6_enabled is source.ipv6_enabled
+            and reproduction.requested_ipv6 == source.ipv6_forwarding_status
+        )
+    if not source_matches:
+        raise SandboxM5ControllerError("M5 source-state lineage was rejected")
     try:
         payload = ValidationResultPayload.model_validate(
             {

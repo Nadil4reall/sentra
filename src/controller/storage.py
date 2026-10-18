@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -1026,6 +1026,41 @@ _CREATE_POST_ENFORCEMENT_VERIFICATIONS_SQL = """
     )
 """
 
+
+def _m9_control_schema(sql: str) -> str:
+    """Expand only the fixed control CHECK in a known Controller table."""
+
+    old = "CHECK (control_id = '7.1.1')"
+    if sql.count(old) != 1:
+        raise RuntimeError("M9 control schema source is not recognized")
+    return sql.replace(old, "CHECK (control_id IN ('7.1.1', '3.3.1'))")
+
+
+_M9_CONTROL_SCHEMAS = {
+    "validation_jobs": (_CREATE_VALIDATION_JOBS_SQL, _m9_control_schema(_CREATE_VALIDATION_JOBS_SQL)),
+    "validation_results": (_CREATE_VALIDATION_RESULTS_SQL, _m9_control_schema(_CREATE_VALIDATION_RESULTS_SQL)),
+    "sandbox_sessions": (_CREATE_SANDBOX_SESSIONS_SQL, _m9_control_schema(_CREATE_SANDBOX_SESSIONS_SQL)),
+    "enforcement_jobs": (_CREATE_ENFORCEMENT_JOBS_M7D_SQL, _m9_control_schema(_CREATE_ENFORCEMENT_JOBS_M7D_SQL)),
+    "enforcement_results": (_CREATE_ENFORCEMENT_RESULTS_SQL, _m9_control_schema(_CREATE_ENFORCEMENT_RESULTS_SQL)),
+}
+_CREATE_M9_MIGRATIONS_SQL = """
+    CREATE TABLE controller_schema_migrations (
+        version INTEGER PRIMARY KEY CHECK (version = 9),
+        name TEXT NOT NULL CHECK (name = 'm9_two_control_constraints'),
+        applied_at TEXT NOT NULL
+    )
+"""
+
+
+def _m9_expected_schema(table: str) -> str:
+    """SQLite quotes the table name when the shadow table is renamed."""
+
+    sql = _M9_CONTROL_SCHEMAS[table][1]
+    needle = f"CREATE TABLE {table} ("
+    if sql.count(needle) != 1:
+        raise RuntimeError("M9 schema source is not recognized")
+    return sql.replace(needle, f'CREATE TABLE "{table}" (', 1)
+
 def _normalized_schema_sql(value: str) -> str:
     """Normalize insignificant SQL whitespace for an exact schema fingerprint."""
 
@@ -1071,6 +1106,10 @@ class SQLiteControllerRepository:
         self._ensure_safe_parent()
         self._prepare_database_file()
         self._initialize()
+        if self._migrate_m9_control_schemas():
+            # Recreate indexes dropped with the old tables and revalidate the
+            # complete Controller schema after the atomic table rebuild.
+            self._initialize()
 
     def _ensure_safe_parent(self) -> None:
         parent = self.path.parent
@@ -1160,6 +1199,133 @@ class SQLiteControllerRepository:
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
+        finally:
+            connection.close()
+
+    def _migrate_m9_control_schemas(self) -> bool:
+        """Atomically widen five exact control CHECKs without altering rows.
+
+        Foreign keys are checked before commit and re-enabled for every normal
+        repository connection. Unknown or mixed schemas fail closed.
+        """
+
+        self._validate_database_path()
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            marker = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='controller_schema_migrations'"
+            ).fetchone()
+            if marker is not None and (
+                not isinstance(marker["sql"], str)
+                or _normalized_schema_sql(marker["sql"])
+                != _normalized_schema_sql(_CREATE_M9_MIGRATIONS_SQL)
+            ):
+                raise ControllerStorageSecurityError("M9 migration marker is invalid")
+            states: set[str] = set()
+            for table, (old_sql, new_sql) in _M9_CONTROL_SCHEMAS.items():
+                row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+                if row is None or not isinstance(row["sql"], str):
+                    raise ControllerStorageSecurityError("M9 control schema is incomplete")
+                observed = _normalized_schema_sql(row["sql"])
+                if observed == _normalized_schema_sql(old_sql):
+                    states.add("old")
+                elif observed == _normalized_schema_sql(_m9_expected_schema(table)):
+                    states.add("new")
+                else:
+                    raise ControllerStorageSecurityError("M9 control schema is not recognized")
+            if states == {"new"}:
+                if marker is None:
+                    raise ControllerStorageSecurityError("M9 migration marker is missing")
+                rows = connection.execute(
+                    "SELECT version, name FROM controller_schema_migrations"
+                ).fetchall()
+                if len(rows) != 1 or tuple(rows[0]) != (
+                    9, "m9_two_control_constraints"
+                ):
+                    raise ControllerStorageSecurityError("M9 migration marker is invalid")
+                connection.commit()
+                return False
+            if states != {"old"} or marker is not None:
+                raise ControllerStorageSecurityError("M9 control schema is mixed")
+
+            m8_views = connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='view' "
+                "AND name LIKE 'm8_%' ORDER BY name"
+            ).fetchall()
+            if m8_views:
+                # SQLite validates all views when a shadow table is renamed.
+                # Keep the four exact M8 read projections byte-for-byte inside
+                # this transaction, and refuse an altered or partial set.
+                from src.m8db.migrations import _expected_schema, _migrations
+
+                expected = _expected_schema(_migrations())
+                required_views = {
+                    "m8_compatibility_decisions", "m8_validation_outcomes",
+                    "m8_deployments", "m8_verifications",
+                }
+                if {row["name"] for row in m8_views} != required_views:
+                    raise ControllerStorageSecurityError("M8 view set is incomplete")
+                for row in m8_views:
+                    if (
+                        not isinstance(row["sql"], str)
+                        or " ".join(row["sql"].split()) != expected.get(row["name"])
+                    ):
+                        raise ControllerStorageSecurityError("M8 view schema is invalid")
+                    connection.execute(f"DROP VIEW {row['name']}")
+
+            for table, (_old_sql, new_sql) in _M9_CONTROL_SCHEMAS.items():
+                temporary = f"{table}_m9_new"
+                create_sql = new_sql.replace(
+                    f"CREATE TABLE {table} (",
+                    f"CREATE TABLE {temporary} (",
+                    1,
+                )
+                if create_sql == new_sql:
+                    raise ControllerStorageSecurityError("M9 schema source is invalid")
+                before = connection.execute(
+                    f"SELECT count(*) FROM {table}"
+                ).fetchone()[0]
+                connection.execute(create_sql)
+                connection.execute(
+                    f"INSERT INTO {temporary} SELECT * FROM {table}"
+                )
+                after = connection.execute(
+                    f"SELECT count(*) FROM {temporary}"
+                ).fetchone()[0]
+                if before != after:
+                    raise ControllerStorageSecurityError("M9 migration changed historical rows")
+                connection.execute(f"DROP TABLE {table}")
+                connection.execute(f"ALTER TABLE {temporary} RENAME TO {table}")
+
+            for row in m8_views:
+                connection.execute(row["sql"])
+
+            connection.execute(_CREATE_M9_MIGRATIONS_SQL)
+            connection.execute(
+                "INSERT INTO controller_schema_migrations "
+                "(version, name, applied_at) VALUES (?, ?, ?)",
+                (9, "m9_two_control_constraints", datetime.now(timezone.utc).isoformat()),
+            )
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise ControllerStorageSecurityError("M9 migration broke lineage")
+            if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ControllerStorageSecurityError("M9 migration failed integrity check")
+            connection.commit()
+            return True
+        except BaseException as error:
+            connection.rollback()
+            if isinstance(error, ControllerStorageSecurityError):
+                raise
+            raise ControllerStorageSecurityError(
+                "M9 control migration failed without changing historical rows"
+            ) from error
         finally:
             connection.close()
 
@@ -1385,7 +1551,10 @@ class SQLiteControllerRepository:
         elif (
             not isinstance(row["sql"], str)
             or _normalized_schema_sql(row["sql"])
-            != _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7D_SQL)
+            not in {
+                _normalized_schema_sql(_CREATE_ENFORCEMENT_JOBS_M7D_SQL),
+                _normalized_schema_sql(_m9_expected_schema("enforcement_jobs")),
+            }
         ):
             raise ControllerStorageSecurityError("enforcement schema is not recognized")
         columns = {
@@ -1426,7 +1595,12 @@ class SQLiteControllerRepository:
             if (
                 schema is None or not isinstance(schema["sql"], str)
                 or _normalized_schema_sql(schema["sql"])
-                != _normalized_schema_sql(expected_sql)
+                not in {
+                    _normalized_schema_sql(expected_sql),
+                    _normalized_schema_sql(_m9_expected_schema(table))
+                    if table in _M9_CONTROL_SCHEMAS
+                    else _normalized_schema_sql(expected_sql),
+                }
                 or columns != expected_columns
                 or connection.execute(f"PRAGMA foreign_key_check({table})").fetchall()
             ):
@@ -1631,7 +1805,10 @@ class SQLiteControllerRepository:
                 columns != expected_columns[table_name]
                 or not isinstance(schema_sql, str)
                 or _normalized_schema_sql(schema_sql)
-                != _normalized_schema_sql(create_sql)
+                not in {
+                    _normalized_schema_sql(create_sql),
+                    _normalized_schema_sql(_m9_expected_schema(table_name)),
+                }
             ):
                 raise ControllerStorageSecurityError(
                     "controller validation schema constraints are not recognized"
@@ -1696,7 +1873,10 @@ class SQLiteControllerRepository:
             or schema_row is None
             or not isinstance(schema_row["sql"], str)
             or _normalized_schema_sql(schema_row["sql"])
-            != _normalized_schema_sql(_CREATE_SANDBOX_SESSIONS_SQL)
+            not in {
+                _normalized_schema_sql(_CREATE_SANDBOX_SESSIONS_SQL),
+                _normalized_schema_sql(_m9_expected_schema("sandbox_sessions")),
+            }
         ):
             raise ControllerStorageSecurityError(
                 "controller sandbox-session schema constraints are not recognized"
