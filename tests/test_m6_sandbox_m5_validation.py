@@ -332,7 +332,7 @@ def test_successful_reproduction_enters_existing_m5_passwd_adapter(
     assert observed["production_root"] == Path("/")
     validator = observed["validator"]
     assert isinstance(validator.adapters["7.1.1"], PasswdPermissionsAdapter)
-    assert list(validator.adapters) == ["7.1.1", "5.1.20", "4.2.3"]
+    assert list(validator.adapters) == ["7.1.1", "3.3.1", "5.1.20", "4.2.3"]
 
     result = report.control_results[0]
     assert result.control_id == "7.1.1"
