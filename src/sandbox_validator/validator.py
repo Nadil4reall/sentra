@@ -160,11 +160,21 @@ class SandboxValidator:
             errors = list(precheck.blockers)
             warnings = list(precheck.warnings)
         else:
-            allowed_actions = (
-                frozenset({MutationAction.SSH_SERVICE_RELOAD})
-                if request.control_id == "5.1.20"
-                else frozenset()
-            )
+            if request.control_id == "5.1.20":
+                allowed_actions = frozenset({
+                    MutationAction.SSH_SERVICE_RELOAD,
+                })
+            elif request.control_id == "3.3.1":
+                allowed_actions = frozenset({
+                    MutationAction.IPV4_FORWARDING_DISABLE,
+                    MutationAction.IPV4_FORWARDING_ENABLE,
+                    MutationAction.IPV6_FORWARDING_DISABLE,
+                    MutationAction.IPV6_FORWARDING_ENABLE,
+                    MutationAction.IPV4_ROUTE_FLUSH,
+                    MutationAction.IPV6_ROUTE_FLUSH,
+                })
+            else:
+                allowed_actions = frozenset()
             authorization = MutationAuthorization(
                 control_id=request.control_id,
                 allowed_actions=allowed_actions,

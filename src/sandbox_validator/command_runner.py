@@ -22,12 +22,20 @@ class ReadAction(StrEnum):
     UFW_SERVICE_ACTIVE = "ufw_service_active"
     UFW_STATUS = "ufw_status"
     UFW_ADDED_RULES = "ufw_added_rules"
+    IPV4_FORWARDING_STATUS = "ipv4_forwarding_status"
+    IPV6_FORWARDING_STATUS = "ipv6_forwarding_status"
 
 
 class MutationAction(StrEnum):
     """The complete subprocess mutation allowlist for the initial M5 release."""
 
     SSH_SERVICE_RELOAD = "ssh_service_reload"
+    IPV4_FORWARDING_DISABLE = "ipv4_forwarding_disable"
+    IPV4_FORWARDING_ENABLE = "ipv4_forwarding_enable"
+    IPV6_FORWARDING_DISABLE = "ipv6_forwarding_disable"
+    IPV6_FORWARDING_ENABLE = "ipv6_forwarding_enable"
+    IPV4_ROUTE_FLUSH = "ipv4_route_flush"
+    IPV6_ROUTE_FLUSH = "ipv6_route_flush"
 
 
 CommandKind = Literal["read", "mutation"]
@@ -73,6 +81,16 @@ _READ_COMMANDS: dict[ReadAction, tuple[str, ...]] = {
     ),
     ReadAction.UFW_STATUS: ("/usr/sbin/ufw", "status"),
     ReadAction.UFW_ADDED_RULES: ("/usr/sbin/ufw", "show", "added"),
+    ReadAction.IPV4_FORWARDING_STATUS: (
+        "/usr/sbin/sysctl",
+        "-n",
+        "net.ipv4.ip_forward",
+    ),
+    ReadAction.IPV6_FORWARDING_STATUS: (
+        "/usr/sbin/sysctl",
+        "-n",
+        "net.ipv6.conf.all.forwarding",
+    ),
 }
 
 _MUTATION_COMMANDS: dict[MutationAction, tuple[str, ...]] = {
@@ -80,7 +98,37 @@ _MUTATION_COMMANDS: dict[MutationAction, tuple[str, ...]] = {
         "/usr/bin/systemctl",
         "reload",
         "ssh.service",
-    )
+    ),
+    MutationAction.IPV4_FORWARDING_DISABLE: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv4.ip_forward=0",
+    ),
+    MutationAction.IPV4_FORWARDING_ENABLE: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv4.ip_forward=1",
+    ),
+    MutationAction.IPV6_FORWARDING_DISABLE: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv6.conf.all.forwarding=0",
+    ),
+    MutationAction.IPV6_FORWARDING_ENABLE: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv6.conf.all.forwarding=1",
+    ),
+    MutationAction.IPV4_ROUTE_FLUSH: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv4.route.flush=1",
+    ),
+    MutationAction.IPV6_ROUTE_FLUSH: (
+        "/usr/sbin/sysctl",
+        "-w",
+        "net.ipv6.route.flush=1",
+    ),
 }
 
 _FIXED_ENVIRONMENT = {
@@ -174,6 +222,12 @@ class CommandRunner:
             raise CommandNotAllowedError("mutation authorization is required")
         expected_control = {
             MutationAction.SSH_SERVICE_RELOAD: "5.1.20",
+            MutationAction.IPV4_FORWARDING_DISABLE: "3.3.1",
+            MutationAction.IPV4_FORWARDING_ENABLE: "3.3.1",
+            MutationAction.IPV6_FORWARDING_DISABLE: "3.3.1",
+            MutationAction.IPV6_FORWARDING_ENABLE: "3.3.1",
+            MutationAction.IPV4_ROUTE_FLUSH: "3.3.1",
+            MutationAction.IPV6_ROUTE_FLUSH: "3.3.1",
         }[action]
         if authorization.control_id != expected_control:
             raise CommandNotAllowedError(
