@@ -1,4 +1,4 @@
-"""Reproduce the allowlisted 7.1.1 passwd metadata in the sandbox guest."""
+"""Reproduce only allowlisted source state inside the disposable sandbox guest."""
 
 from __future__ import annotations
 
@@ -8,13 +8,19 @@ import stat
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from src.sandbox_protocol import PasswdSourceState, SandboxContextManifest
+from src.sandbox_protocol import (
+    IpForwardingSourceState,
+    PasswdSourceState,
+    SandboxContextManifest,
+)
+from .ip_forwarding_runtime import SystemForwardingRuntime
 
 
 SANDBOX_PASSWD_TARGET_PATH = "/etc/passwd"
 _CONTROL_ID: Literal["7.1.1"] = "7.1.1"
 _MODE_PATTERN = re.compile(r"[0-7]{4}\Z")
 _FIXED_ERROR_MESSAGE = "sandbox source-state reproduction failed"
+_FIXED_ROLLBACK_MESSAGE = "sandbox source-state rollback failed"
 
 
 class SandboxStateReproductionError(RuntimeError):
@@ -37,6 +43,38 @@ class SandboxPasswdReproductionResult:
     after_uid: int
     after_gid: int
     reproduced: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxIpForwardingReproductionResult:
+    """Only before/requested/after forwarding facts; no paths or payloads."""
+
+    control_id: Literal["3.3.1"]
+    before_ipv4: int
+    requested_ipv4: int
+    after_ipv4: int
+    ipv6_enabled: bool
+    before_ipv6: int | None
+    requested_ipv6: int | None
+    after_ipv6: int | None
+    reproduced: bool
+
+
+class _ForwardingRuntime(Protocol):
+    """Fixed forwarding observations and actions, never caller-supplied argv."""
+
+    def ipv6_enabled(self) -> bool: ...
+
+    def read_ipv4(self) -> int: ...
+
+    def read_ipv6(self) -> int: ...
+
+    def set_ipv4(self, value: int) -> None: ...
+
+    def set_ipv6(self, value: int) -> None: ...
+
+
+_FORWARDING_RUNTIME: _ForwardingRuntime = SystemForwardingRuntime()
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,4 +213,111 @@ def reproduce_passwd_source_state(
     return _reproduce_source_state(
         manifest,
         filesystem=_FILESYSTEM,
+    )
+
+
+def _reproduce_ip_forwarding_source_state(
+    manifest: SandboxContextManifest,
+    *,
+    runtime: _ForwardingRuntime,
+) -> SandboxIpForwardingReproductionResult:
+    """Reproduce fixed runtime keys; refuse mismatched IPv6 availability."""
+
+    if (
+        type(manifest) is not SandboxContextManifest
+        or manifest.control_id != "3.3.1"
+        or type(manifest.source_state) is not IpForwardingSourceState
+    ):
+        raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE)
+    source = manifest.source_state
+    requested_ipv4 = source.ipv4_forwarding_status
+    requested_ipv6 = source.ipv6_forwarding_status
+    enabled = source.ipv6_enabled
+    if (
+        type(requested_ipv4) is not int
+        or requested_ipv4 not in {0, 1}
+        or type(enabled) is not bool
+        or (enabled and (type(requested_ipv6) is not int or requested_ipv6 not in {0, 1}))
+        or (not enabled and requested_ipv6 is not None)
+    ):
+        raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE)
+
+    ipv4_started = False
+    ipv6_started = False
+    before_ipv4: int | None = None
+    before_ipv6: int | None = None
+    try:
+        if runtime.ipv6_enabled() is not enabled:
+            raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE)
+        before_ipv4 = runtime.read_ipv4()
+        before_ipv6 = runtime.read_ipv6() if enabled else None
+        if (
+            type(before_ipv4) is not int or before_ipv4 not in {0, 1}
+            or (enabled and (type(before_ipv6) is not int or before_ipv6 not in {0, 1}))
+        ):
+            raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE)
+
+        if before_ipv4 != requested_ipv4:
+            ipv4_started = True
+            runtime.set_ipv4(requested_ipv4)
+        if enabled and before_ipv6 != requested_ipv6:
+            ipv6_started = True
+            runtime.set_ipv6(requested_ipv6)  # type: ignore[arg-type]
+
+        after_ipv4 = runtime.read_ipv4()
+        after_ipv6 = runtime.read_ipv6() if enabled else None
+        if (
+            after_ipv4 != requested_ipv4
+            or after_ipv6 != requested_ipv6
+            or runtime.ipv6_enabled() is not enabled
+        ):
+            raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE)
+        return SandboxIpForwardingReproductionResult(
+            control_id="3.3.1",
+            before_ipv4=before_ipv4,
+            requested_ipv4=requested_ipv4,
+            after_ipv4=after_ipv4,
+            ipv6_enabled=enabled,
+            before_ipv6=before_ipv6,
+            requested_ipv6=requested_ipv6,
+            after_ipv6=after_ipv6,
+            reproduced=True,
+        )
+    except Exception:
+        # A failed fixed action may already have changed the kernel before
+        # reporting failure. Reverse every started action and verify both keys.
+        rollback_failed = False
+        if ipv6_started and before_ipv6 is not None:
+            try:
+                runtime.set_ipv6(before_ipv6)
+            except Exception:
+                rollback_failed = True
+        if ipv4_started and before_ipv4 is not None:
+            try:
+                runtime.set_ipv4(before_ipv4)
+            except Exception:
+                rollback_failed = True
+        if ipv4_started or ipv6_started:
+            try:
+                if (
+                    runtime.read_ipv4() != before_ipv4
+                    or (enabled and runtime.read_ipv6() != before_ipv6)
+                    or runtime.ipv6_enabled() is not enabled
+                ):
+                    rollback_failed = True
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise SandboxStateReproductionError(_FIXED_ROLLBACK_MESSAGE) from None
+        raise SandboxStateReproductionError(_FIXED_ERROR_MESSAGE) from None
+
+
+def reproduce_ip_forwarding_source_state(
+    manifest: SandboxContextManifest,
+) -> SandboxIpForwardingReproductionResult:
+    """Apply one strict 3.3.1 source-state context inside the sandbox guest."""
+
+    return _reproduce_ip_forwarding_source_state(
+        manifest,
+        runtime=_FORWARDING_RUNTIME,
     )
