@@ -29,7 +29,10 @@ from src.sandbox_validator.models import (
     ExecutionMode,
     ValidationReport,
 )
-from src.sandbox_protocol.models import PasswdSourceState
+from src.sandbox_protocol.models import (
+    IpForwardingSourceState,
+    PasswdSourceState,
+)
 from src.target_profiler.models import TargetProfile
 
 
@@ -331,19 +334,19 @@ class ValidationJobRecord(StrictControllerModel):
 
 
 class EnforcementJobCreateRequest(StrictControllerModel):
-    """New administrator approval to consider only fixed 7.1.1 target enforcement."""
+    """New administrator approval for one explicitly supported target control."""
 
     request_id: UUID
     target_id: UUID
     profile_id: UUID
     compatibility_report_id: UUID
     sandbox_session_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     administrator_enforcement_approval_acknowledged: Literal[True]
 
 
 class EnforcementJobRecord(StrictControllerModel):
-    """Controller-owned 7.1.1 authorization and immutable attempt lifecycle."""
+    """Controller-owned authorization and immutable enforcement-attempt lifecycle."""
 
     enforcement_job_id: UUID
     request_id: UUID
@@ -351,7 +354,7 @@ class EnforcementJobRecord(StrictControllerModel):
     profile_id: UUID
     compatibility_report_id: UUID
     sandbox_session_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     job_type: Literal[JobType.ENFORCE_CONTROL] = JobType.ENFORCE_CONTROL
     administrator_enforcement_approval_acknowledged: Literal[True]
     sandbox_evidence_sha256: Sha256Hex
@@ -674,11 +677,20 @@ class EnforcementJobDelivery(EnforcementJobRecord):
     dispatched_at: AwareDatetime
     evidence_sandbox_session_id: UUID
     m6_evidence: ValidationResultPayload
-    expected_source_state: PasswdSourceState
+    expected_source_state: PasswdSourceState | IpForwardingSourceState
 
     @model_validator(mode="after")
     def validate_evidence_lineage(self) -> "EnforcementJobDelivery":
         evidence = self.m6_evidence
+        expected_state_type = (
+            PasswdSourceState
+            if self.control_id == "7.1.1"
+            else IpForwardingSourceState
+        )
+        if type(self.expected_source_state) is not expected_state_type:
+            raise ValueError(
+                "enforcement source state does not match selected control"
+            )
         if (
             self.evidence_sandbox_session_id != self.sandbox_session_id
             or evidence.target_id != self.target_id

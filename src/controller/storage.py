@@ -3477,7 +3477,7 @@ class SQLiteControllerRepository:
             or payload.execution_mode is not ExecutionMode.EXECUTE
             or payload.report.mode is not ExecutionMode.EXECUTE
             or len(payload.report.control_results) != 1
-            or payload.report.control_results[0].control_id != "7.1.1"
+            or payload.report.control_results[0].control_id != job.control_id
             or payload.report.control_results[0].result.value != "validated"
             or payload.report.control_results[0].m4_input
             != session.compatibility_reference
@@ -3708,12 +3708,12 @@ class SQLiteControllerRepository:
         report = self._stored_compatibility_report_from_row(report_row)
         self._validate_compatibility_report_lineage(report, profile)
         try:
-            reference = compatibility_reference_from_record(report.record, "7.1.1")
+            reference = compatibility_reference_from_record(report.record, job.control_id)
             return derive_sandbox_context(
-                "7.1.1", profile.profile, reference,
+                job.control_id, profile.profile, reference,
             ).source_state
         except (ValueError, ValidationError) as error:
-            raise StorageConflictError("approved passwd source state is invalid") from error
+            raise StorageConflictError("approved enforcement source state is invalid") from error
 
     def _enforcement_result_from_row(
         self, connection: sqlite3.Connection, row: sqlite3.Row,

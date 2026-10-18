@@ -21,6 +21,10 @@ from src.controller.models import (
     SandboxSessionStatus,
     ValidationResultPayload,
 )
+from src.controller.sandbox_context import derive_sandbox_context
+from src.controller.validation import compatibility_reference_from_record
+from src.sandbox_protocol.models import IpForwardingSourceState
+
 from src.controller.service import (
     AuthenticationError,
     AuthorizationError,
@@ -33,6 +37,11 @@ from src.controller.storage import (
     StorageConflictError,
 )
 from src.sandbox_validator.models import ActionStatus, HealthStatus, ValidationDecision
+
+from test_m6_sandbox_lifecycle import (
+    _controller as _m9_controller,
+    _stored_profile_and_report as _m9_stored_profile_and_report,
+)
 
 from test_m6_validation import (
     _admin,
@@ -310,3 +319,58 @@ def test_record_is_pending_only_and_agent_union_excludes_enforcement() -> None:
         "administrator_enforcement_approval_acknowledged",
     }
     assert "command" not in EnforcementJobRecord.model_fields
+
+
+
+def test_3_3_1_approved_state_is_derived_from_stored_m3_m4(
+    tmp_path: Path,
+) -> None:
+    """M7 must derive 3.3.1 state from trusted stored M3/M4 lineage."""
+
+    _database, repository, service = _m9_controller(tmp_path)
+    enrollment, profile, report = _m9_stored_profile_and_report(service)
+
+    stored_profile = repository.get_stored_profile(profile.profile_id)
+    assert stored_profile is not None
+
+    reference = compatibility_reference_from_record(report, "3.3.1")
+    expected = derive_sandbox_context(
+        "3.3.1",
+        stored_profile.profile,
+        reference,
+    ).source_state
+
+    assert type(expected) is IpForwardingSourceState
+
+    job = EnforcementJobRecord(
+        enforcement_job_id=uuid4(),
+        request_id=uuid4(),
+        target_id=enrollment.target_id,
+        profile_id=profile.profile_id,
+        compatibility_report_id=report.compatibility_report_id,
+        sandbox_session_id=uuid4(),
+        control_id="3.3.1",
+        administrator_enforcement_approval_acknowledged=True,
+        sandbox_evidence_sha256="0" * 64,
+        created_at=profile.received_at,
+    )
+
+    with repository._connection() as connection:
+        observed = repository._approved_enforcement_state(connection, job)
+
+    assert type(observed) is IpForwardingSourceState
+    assert observed == expected
+
+
+def test_7_1_1_sandbox_evidence_cannot_be_relabelled_as_3_3_1(
+    tmp_path: Path,
+) -> None:
+    """Cross-control M6 evidence must fail closed at M7 authorization."""
+
+    case = _case(tmp_path)
+
+    with pytest.raises(ControllerConflictError):
+        case.service.create_enforcement_job(
+            _admin(),
+            _request(case, control_id="3.3.1"),
+        )

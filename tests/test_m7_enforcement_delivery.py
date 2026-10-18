@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -21,6 +22,7 @@ from src.agent.enforcement_journal import (
 )
 from src.agent.runtime import AgentRuntime, AgentRuntimeError
 from src.controller.enforcement import verify_enforcement_delivery
+from src.controller.validation import canonical_validation_payload_json
 from src.controller.models import (
     EnforcementJobDelivery, EnforcementJobRecord, JobCreateRequest,
     JobPollRequest, JobPollResponse, JobStatus, JobType,
@@ -31,7 +33,10 @@ from src.controller.storage import (
     StorageConflictError,
     _CREATE_ENFORCEMENT_JOBS_M7A_SQL,
 )
-from src.sandbox_protocol.models import PasswdSourceState
+from src.sandbox_protocol.models import (
+    IpForwardingSourceState,
+    PasswdSourceState,
+)
 from src.sandbox_validator.models import ValidationDecision
 
 from test_m6_agent_runtime import _Profiler, _Transport, _protocol
@@ -361,3 +366,102 @@ def test_m7b_path_has_no_mutation_or_generic_execution_source() -> None:
     ):
         assert forbidden not in source
     assert preflight.PASSWD_PATH == "/etc/passwd"
+
+
+
+def _replace_control_id(value):
+    """Rewrite only explicit structured control_id fields in test evidence."""
+
+    if isinstance(value, dict):
+        return {
+            key: (
+                "3.3.1"
+                if key == "control_id" and item == "7.1.1"
+                else _replace_control_id(item)
+            )
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [_replace_control_id(item) for item in value]
+
+    return value
+
+
+def _synthetic_forwarding_delivery(
+    tmp_path: Path,
+) -> tuple[object, EnforcementJobDelivery]:
+    """Reuse valid M7 lineage while exercising the strict 3.3.1 wire model."""
+
+    case, baseline = _delivery(tmp_path)
+
+    evidence_document = _replace_control_id(
+        baseline.m6_evidence.model_dump(mode="python")
+    )
+    evidence_document["report"]["control_results"][0]["control_title"] = (
+        "Ensure ip forwarding is disabled"
+    )
+
+    evidence = type(baseline.m6_evidence).model_validate(
+        evidence_document,
+        strict=True,
+    )
+
+    digest = hashlib.sha256(
+        canonical_validation_payload_json(evidence).encode("utf-8")
+    ).hexdigest()
+
+    delivery_document = baseline.model_dump(mode="python")
+    delivery_document.update(
+        control_id="3.3.1",
+        m6_evidence=evidence.model_dump(mode="python"),
+        sandbox_evidence_sha256=digest,
+        expected_source_state={
+            "ipv4_forwarding_status": 1,
+            "ipv6_enabled": True,
+            "ipv6_forwarding_status": 1,
+        },
+    )
+
+    delivery = EnforcementJobDelivery.model_validate(
+        delivery_document,
+        strict=True,
+    )
+
+    return case, delivery
+
+
+def test_verify_enforcement_delivery_accepts_3_3_1_source_state(
+    tmp_path: Path,
+) -> None:
+    case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    assert delivery.control_id == "3.3.1"
+    assert type(delivery.expected_source_state) is IpForwardingSourceState
+    assert delivery.m6_evidence.control_id == "3.3.1"
+    assert delivery.m6_evidence.report.control_results[0].control_id == "3.3.1"
+
+    assert verify_enforcement_delivery(
+        delivery,
+        target_id=case.enrollment.target_id,
+        agent_id=case.enrollment.agent_id,
+    ) == delivery.sandbox_evidence_sha256
+
+
+def test_3_3_1_delivery_rejects_passwd_source_state(
+    tmp_path: Path,
+) -> None:
+    _case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    document = delivery.model_dump(mode="python")
+    document["expected_source_state"] = PasswdSourceState(
+        passwd_file_mode="0644",
+        passwd_file_owner_uid=0,
+        passwd_file_group_gid=0,
+    ).model_dump(mode="python")
+
+    with pytest.raises(
+        ValidationError,
+        match="source state does not match selected control",
+    ):
+        EnforcementJobDelivery.model_validate(document, strict=True)

@@ -1099,7 +1099,7 @@ class ControllerService:
         auth: AdminAuth,
         request: EnforcementJobCreateRequest,
     ) -> EnforcementJobRecord:
-        """Create only a pending 7.1.1 job from closed, validated M6 evidence."""
+        """Create one pending supported-control job from closed validated M6 evidence."""
 
         self._authenticate_admin(auth)
         if type(request) is not EnforcementJobCreateRequest:
@@ -1157,7 +1157,7 @@ class ControllerService:
             or payload.execution_mode is not ExecutionMode.EXECUTE
             or payload.report.mode is not ExecutionMode.EXECUTE
             or len(payload.report.control_results) != 1
-            or payload.report.control_results[0].control_id != "7.1.1"
+            or payload.report.control_results[0].control_id != request.control_id
             or payload.report.control_results[0].result is not ValidationDecision.VALIDATED
         ):
             raise ControllerConflictError("sandbox evidence does not authorize enforcement")
@@ -1171,7 +1171,7 @@ class ControllerService:
             profile_id=request.profile_id,
             compatibility_report_id=request.compatibility_report_id,
             sandbox_session_id=request.sandbox_session_id,
-            control_id="7.1.1",
+            control_id=request.control_id,
             administrator_enforcement_approval_acknowledged=True,
             sandbox_evidence_sha256=evidence_sha256,
             created_at=created_at,

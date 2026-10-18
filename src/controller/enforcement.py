@@ -37,7 +37,7 @@ def verify_enforcement_delivery(
         or delivery.assigned_agent_id != agent_id
         or delivery.job_type is not JobType.ENFORCE_CONTROL
         or delivery.status is not JobStatus.DISPATCHED
-        or delivery.control_id != "7.1.1"
+        or delivery.control_id not in {"7.1.1", "3.3.1"}
         or delivery.evidence_sandbox_session_id != delivery.sandbox_session_id
         or delivery.administrator_enforcement_approval_acknowledged is not True
         or evidence.target_id != delivery.target_id
@@ -47,7 +47,7 @@ def verify_enforcement_delivery(
         or evidence.execution_mode is not ExecutionMode.EXECUTE
         or evidence.report.mode is not ExecutionMode.EXECUTE
         or len(evidence.report.control_results) != 1
-        or control.control_id != "7.1.1"
+        or control.control_id != delivery.control_id
         or control.result is not ValidationDecision.VALIDATED
         or control.m4_input is None
         or control.m4_input.report_source != (
