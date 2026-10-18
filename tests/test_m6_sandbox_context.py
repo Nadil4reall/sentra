@@ -8,9 +8,14 @@ from pydantic import ValidationError
 
 from src.compatibility_engine.models import CompatibilityDecision
 from src.controller.sandbox_context import (
+    IpForwardingSourceState,
     PasswdSourceState,
     SandboxContextManifest,
     derive_sandbox_context,
+)
+from src.sandbox_protocol import (
+    decode_sandbox_context_frame,
+    encode_sandbox_context_frame,
 )
 from src.poc_models import DerivationStatus
 from src.sandbox_validator.models import CompatibilityReference
@@ -151,6 +156,124 @@ def test_derives_valid_compliant_passwd_state() -> None:
         passwd_file_owner_uid=0,
         passwd_file_group_gid=0,
     )
+    assert encode_sandbox_context_frame(context)[4:] == (
+        b'{"context_version":"1","control_id":"7.1.1","source_state":'
+        b'{"passwd_file_group_gid":0,"passwd_file_mode":"0644",'
+        b'"passwd_file_owner_uid":0}}'
+    )
+
+
+def _forwarding_profile(
+    *,
+    ipv6_enabled: bool = True,
+    ipv6_status: FactStatus = FactStatus.COLLECTED,
+) -> TargetProfile:
+    return _profile(
+        values={
+            "ipv4_forwarding_status": 1,
+            "ipv6_enabled": ipv6_enabled,
+            "ipv6_forwarding_status": 1,
+        },
+        statuses={"ipv6_forwarding_status": ipv6_status},
+        requested_by={
+            name: ["3.3.1"] for name in (
+                "ipv4_forwarding_status", "ipv6_enabled", "ipv6_forwarding_status"
+            )
+        },
+    )
+
+
+def test_derives_only_selected_forwarding_source_facts() -> None:
+    manifest = _derive(
+        _forwarding_profile(),
+        _compatibility(control_id="3.3.1"),
+        control_id="3.3.1",
+    )
+
+    assert manifest.source_state == IpForwardingSourceState(
+        ipv4_forwarding_status=1,
+        ipv6_enabled=True,
+        ipv6_forwarding_status=1,
+    )
+    assert decode_sandbox_context_frame(
+        encode_sandbox_context_frame(manifest)
+    ) == manifest
+    assert "passwd_file_mode" not in manifest.model_dump_json()
+
+
+def test_ipv6_disabled_does_not_require_forwarding_status() -> None:
+    manifest = _derive(
+        _forwarding_profile(
+            ipv6_enabled=False,
+            ipv6_status=FactStatus.UNAVAILABLE,
+        ),
+        _compatibility(control_id="3.3.1"),
+        control_id="3.3.1",
+    )
+
+    assert manifest.source_state == IpForwardingSourceState(
+        ipv4_forwarding_status=1,
+        ipv6_enabled=False,
+    )
+    assert "ipv6_forwarding_status" not in (
+        encode_sandbox_context_frame(manifest)[4:].decode("utf-8")
+    )
+
+
+def test_forwarding_required_unknown_fact_fails_closed() -> None:
+    with pytest.raises(ValueError, match="not collected"):
+        _derive(
+            _forwarding_profile(ipv6_status=FactStatus.ERROR),
+            _compatibility(control_id="3.3.1"),
+            control_id="3.3.1",
+        )
+
+
+def test_context_control_and_source_state_cannot_be_cross_paired() -> None:
+    with pytest.raises(ValidationError):
+        SandboxContextManifest(
+            context_version="1",
+            control_id="3.3.1",
+            source_state=PasswdSourceState(
+                passwd_file_mode="0644",
+                passwd_file_owner_uid=0,
+                passwd_file_group_gid=0,
+            ),
+        )
+    with pytest.raises(ValidationError):
+        SandboxContextManifest(
+            context_version="1",
+            control_id="7.1.1",
+            source_state=IpForwardingSourceState(
+                ipv4_forwarding_status=1,
+                ipv6_enabled=True,
+                ipv6_forwarding_status=1,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"ipv4_forwarding_status": 2, "ipv6_enabled": False},
+        {"ipv4_forwarding_status": "1", "ipv6_enabled": False},
+        {"ipv4_forwarding_status": 1, "ipv6_enabled": "false"},
+        {"ipv4_forwarding_status": 1, "ipv6_enabled": True},
+        {
+            "ipv4_forwarding_status": 1,
+            "ipv6_enabled": False,
+            "ipv6_forwarding_status": 0,
+        },
+        {
+            "ipv4_forwarding_status": 1,
+            "ipv6_enabled": True,
+            "ipv6_forwarding_status": 2,
+        },
+    ],
+)
+def test_malformed_forwarding_state_is_rejected(state: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        IpForwardingSourceState.model_validate(state)
 
 
 def test_derives_representative_noncompliant_state_without_normalizing() -> None:
@@ -249,7 +372,7 @@ def test_profile_and_compatibility_target_mismatch_fails_closed() -> None:
 
 
 def test_unsupported_control_fails_closed() -> None:
-    with pytest.raises(ValueError, match="only control 7.1.1"):
+    with pytest.raises(ValueError, match="does not support this control"):
         _derive(control_id="5.1.20")
 
 
