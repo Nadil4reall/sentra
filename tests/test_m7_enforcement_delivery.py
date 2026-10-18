@@ -295,6 +295,11 @@ def test_enforcement_journal_rejects_untrusted_ancestor(
 def test_exact_m7a_schema_migrates_and_tamper_still_fails_closed(tmp_path: Path) -> None:
     case = _case(tmp_path)
     job = case.service.create_enforcement_job(_admin(), _request(case))
+
+    from test_m9_controller_storage import _downgrade_m9_to_pre_m9
+
+    _downgrade_m9_to_pre_m9(case.database)
+
     with sqlite3.connect(case.database) as connection:
         connection.execute("ALTER TABLE enforcement_jobs RENAME TO m7b_temporary")
         connection.execute(_CREATE_ENFORCEMENT_JOBS_M7A_SQL)

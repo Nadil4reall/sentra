@@ -823,7 +823,12 @@ def test_populated_m6c_database_adds_empty_m6d_tables_without_rewriting_evidence
     original_hash = compatibility.report_sha256
     original_payload = compatibility.report
 
-    # Removing both new tables recreates the exact M6C starting condition while
+    from test_m9_controller_storage import _downgrade_m9_to_pre_m9
+
+    _downgrade_m9_to_pre_m9(database)
+
+    # Removing both new tables now recreates the exact M6C starting condition
+    # from a genuine pre-M9 schema while retaining M6A-M6C evidence.
     # retaining populated M6A-M6C identity and evidence tables.
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")

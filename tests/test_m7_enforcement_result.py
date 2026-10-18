@@ -284,6 +284,11 @@ def test_tampered_stored_payload_or_hash_fails_closed(tmp_path):
 
 def test_exact_m7c_schema_migrates_dispatched_job_without_result(tmp_path):
     case, delivery = _delivery(tmp_path)
+
+    from test_m9_controller_storage import _downgrade_m9_to_pre_m9
+
+    _downgrade_m9_to_pre_m9(case.database)
+
     with sqlite3.connect(case.database) as connection:
         connection.execute("DROP TABLE post_enforcement_verifications")
         connection.execute("DROP TABLE enforcement_results")
