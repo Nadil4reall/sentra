@@ -290,6 +290,12 @@ class AgentRuntime:
                         locked.prepare(
                             observed, EnforcementPreflightOutcome(outcome),
                         )
+                    if job.control_id == "3.3.1":
+                        raise AgentRuntimeError(
+                            "CIS 3.3.1 enforcement execution is not enabled "
+                            "in this read-only checkpoint"
+                        )
+
                     terminal_entry = enforcement_execute.execute_prepared_enforcement(
                         job, locked,
                         retry_interrupted=self._retry_interrupted_enforcement,

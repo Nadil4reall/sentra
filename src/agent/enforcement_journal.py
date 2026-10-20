@@ -21,7 +21,12 @@ from pydantic import (
 
 from src.controller.enforcement import verify_enforcement_delivery
 from src.controller.models import EnforcementJobDelivery, EnforcementResultRecord
-from src.sandbox_protocol.models import PasswdSourceState
+from src.sandbox_protocol.models import (
+    IpForwardingSourceState,
+    PasswdSourceState,
+)
+
+EnforcementSourceState = PasswdSourceState | IpForwardingSourceState
 
 
 _MAX_ENTRY_BYTES = 8192
@@ -49,18 +54,18 @@ class EnforcementJournalEntry(BaseModel):
     enforcement_job_id: UUID
     target_id: UUID
     agent_id: UUID
-    control_id: Literal["7.1.1"]
+    control_id: Literal["7.1.1", "3.3.1"]
     m6_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     delivery_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    expected_source_state: PasswdSourceState
-    observed_source_state: PasswdSourceState
+    expected_source_state: EnforcementSourceState
+    observed_source_state: EnforcementSourceState
     outcome: EnforcementPreflightOutcome
     recorded_at: AwareDatetime
     updated_at: AwareDatetime | None = None
-    pre_execution_observed_state: PasswdSourceState | None = None
-    original_rollback_state: PasswdSourceState | None = None
-    post_execution_observed_state: PasswdSourceState | None = None
-    rollback_observed_state: PasswdSourceState | None = None
+    pre_execution_observed_state: EnforcementSourceState | None = None
+    original_rollback_state: EnforcementSourceState | None = None
+    post_execution_observed_state: EnforcementSourceState | None = None
+    rollback_observed_state: EnforcementSourceState | None = None
     mutation_attempted: bool = False
     mutation_changed: bool = False
     verification_succeeded: bool | None = None
@@ -76,6 +81,29 @@ class EnforcementJournalEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "EnforcementJournalEntry":
+        expected_type = (
+            PasswdSourceState
+            if self.control_id == "7.1.1"
+            else IpForwardingSourceState
+        )
+
+        states = (
+            self.expected_source_state,
+            self.observed_source_state,
+            self.pre_execution_observed_state,
+            self.original_rollback_state,
+            self.post_execution_observed_state,
+            self.rollback_observed_state,
+        )
+
+        if any(
+            value is not None and type(value) is not expected_type
+            for value in states
+        ):
+            raise ValueError(
+                "enforcement journal state does not match selected control"
+            )
+
         acknowledgements = (
             self.controller_result_id, self.controller_result_sha256,
             self.acknowledged_at,
@@ -312,7 +340,7 @@ class EnforcementJournalStore:
         *,
         target_id: UUID,
         agent_id: UUID,
-        observed: PasswdSourceState,
+        observed: EnforcementSourceState,
         outcome: EnforcementPreflightOutcome,
     ) -> EnforcementJournalEntry:
         try:
@@ -438,7 +466,7 @@ class LockedEnforcementJournal:
         self.entry = entry
 
     def prepare(
-        self, observed: PasswdSourceState, outcome: EnforcementPreflightOutcome,
+        self, observed: EnforcementSourceState, outcome: EnforcementPreflightOutcome,
     ) -> EnforcementJournalEntry:
         expected_outcome = (
             EnforcementPreflightOutcome.PREPARED
@@ -454,7 +482,7 @@ class LockedEnforcementJournal:
         entry = EnforcementJournalEntry(
             enforcement_job_id=self._delivery.enforcement_job_id,
             target_id=self._target_id, agent_id=self._agent_id,
-            control_id="7.1.1",
+            control_id=self._delivery.control_id,
             m6_evidence_sha256=self._delivery.sandbox_evidence_sha256,
             delivery_sha256=_delivery_sha256(self._delivery),
             expected_source_state=self._delivery.expected_source_state,

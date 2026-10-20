@@ -465,3 +465,240 @@ def test_3_3_1_delivery_rejects_passwd_source_state(
         match="source state does not match selected control",
     ):
         EnforcementJobDelivery.model_validate(document, strict=True)
+
+
+def _forwarding_state(
+    ipv4: int = 1,
+    *,
+    ipv6_enabled: bool = True,
+    ipv6_forwarding: int | None = 1,
+) -> IpForwardingSourceState:
+    return IpForwardingSourceState(
+        ipv4_forwarding_status=ipv4,
+        ipv6_enabled=ipv6_enabled,
+        ipv6_forwarding_status=ipv6_forwarding,
+    )
+
+
+def test_3_3_1_reader_uses_only_fixed_kernel_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    values = {
+        preflight.IPV4_FORWARDING_PATH: 1,
+        preflight.IPV6_MODULE_DISABLE_PATH: 0,
+        preflight.IPV6_ALL_DISABLE_PATH: 0,
+        preflight.IPV6_DEFAULT_DISABLE_PATH: 0,
+        preflight.IPV6_FORWARDING_PATH: 1,
+    }
+
+    def read(path: str) -> int:
+        calls.append(path)
+        return values[path]
+
+    monkeypatch.setattr(preflight, "_read_fixed_integer", read)
+
+    assert preflight.collect_local_ip_forwarding_source_state() == (
+        _forwarding_state()
+    )
+
+    assert calls == [
+        preflight.IPV4_FORWARDING_PATH,
+        preflight.IPV6_MODULE_DISABLE_PATH,
+        preflight.IPV6_ALL_DISABLE_PATH,
+        preflight.IPV6_DEFAULT_DISABLE_PATH,
+        preflight.IPV6_FORWARDING_PATH,
+    ]
+
+
+def test_3_3_1_reader_skips_ipv6_forwarding_when_ipv6_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    values = {
+        preflight.IPV4_FORWARDING_PATH: 1,
+        preflight.IPV6_MODULE_DISABLE_PATH: 0,
+        preflight.IPV6_ALL_DISABLE_PATH: 1,
+        preflight.IPV6_DEFAULT_DISABLE_PATH: 1,
+    }
+
+    def read(path: str) -> int:
+        calls.append(path)
+        if path == preflight.IPV6_FORWARDING_PATH:
+            raise AssertionError(
+                "IPv6 forwarding must not be read when IPv6 is disabled"
+            )
+        return values[path]
+
+    monkeypatch.setattr(preflight, "_read_fixed_integer", read)
+
+    assert preflight.collect_local_ip_forwarding_source_state() == (
+        _forwarding_state(
+            ipv6_enabled=False,
+            ipv6_forwarding=None,
+        )
+    )
+
+    assert preflight.IPV6_FORWARDING_PATH not in calls
+
+
+def test_3_3_1_preflight_dispatches_to_forwarding_reader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    expected = delivery.expected_source_state
+    assert type(expected) is IpForwardingSourceState
+
+    monkeypatch.setattr(
+        preflight,
+        "collect_local_passwd_source_state",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("passwd reader must not run for 3.3.1")
+        ),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "collect_local_ip_forwarding_source_state",
+        lambda: expected,
+    )
+
+    observed, outcome = preflight.verify_and_observe(
+        delivery,
+        target_id=case.enrollment.target_id,
+        agent_id=case.enrollment.agent_id,
+    )
+
+    assert observed == expected
+    assert outcome == "PREPARED"
+
+
+def test_3_3_1_preflight_detects_runtime_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    expected = delivery.expected_source_state
+    assert type(expected) is IpForwardingSourceState
+
+    observed = expected.model_copy(
+        update={
+            "ipv4_forwarding_status": (
+                0 if expected.ipv4_forwarding_status == 1 else 1
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        preflight,
+        "collect_local_ip_forwarding_source_state",
+        lambda: observed,
+    )
+
+    actual, outcome = preflight.verify_and_observe(
+        delivery,
+        target_id=case.enrollment.target_id,
+        agent_id=case.enrollment.agent_id,
+    )
+
+    assert actual == observed
+    assert outcome == "BLOCKED_DRIFT"
+
+
+def test_3_3_1_preflight_persists_typed_journal(
+    tmp_path: Path,
+) -> None:
+    case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    observed = delivery.expected_source_state
+    assert type(observed) is IpForwardingSourceState
+
+    store = EnforcementJournalStore.for_agent_state(
+        tmp_path / "forwarding-state.json"
+    )
+
+    entry = store.record(
+        delivery,
+        target_id=case.enrollment.target_id,
+        agent_id=case.enrollment.agent_id,
+        observed=observed,
+        outcome=EnforcementPreflightOutcome.PREPARED,
+    )
+
+    assert entry.control_id == "3.3.1"
+    assert type(entry.expected_source_state) is IpForwardingSourceState
+    assert type(entry.observed_source_state) is IpForwardingSourceState
+    assert entry.expected_source_state == observed
+    assert entry.observed_source_state == observed
+
+    stored = json.loads(
+        (
+            store.directory
+            / f"{delivery.enforcement_job_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert stored["control_id"] == "3.3.1"
+    assert stored["expected_source_state"] == observed.model_dump()
+    assert stored["observed_source_state"] == observed.model_dump()
+
+
+def test_runtime_never_sends_3_3_1_to_passwd_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, delivery = _synthetic_forwarding_delivery(tmp_path)
+
+    observed = delivery.expected_source_state
+    assert type(observed) is IpForwardingSourceState
+
+    monkeypatch.setattr(
+        preflight,
+        "collect_local_ip_forwarding_source_state",
+        lambda: observed,
+    )
+
+    monkeypatch.setattr(
+        "src.agent.runtime.enforcement_execute.execute_prepared_enforcement",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "3.3.1 must not reach the 7.1.1 executor"
+            )
+        ),
+    )
+
+    state_path = tmp_path / "forwarding-runtime" / "state.json"
+    state_path.parent.mkdir(mode=0o700)
+
+    protocol = _protocol(state_path)
+    protocol.accept_enrollment(case.enrollment)
+
+    runtime = AgentRuntime(
+        protocol=protocol,
+        transport=_Transport(case.enrollment, jobs=[delivery]),
+        profiler=_Profiler(),
+        enforcement_journal=EnforcementJournalStore.for_agent_state(
+            state_path
+        ),
+    )
+
+    with pytest.raises(
+        AgentRuntimeError,
+        match="3.3.1 enforcement execution is not enabled",
+    ):
+        runtime.run_once()
+
+    store = EnforcementJournalStore.for_agent_state(state_path)
+    stored = json.loads(
+        (
+            store.directory
+            / f"{delivery.enforcement_job_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert stored["control_id"] == "3.3.1"
+    assert stored["outcome"] == "PREPARED"
