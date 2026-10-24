@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ class CompatibilityInputs:
     """Validated structured inputs for one compatibility evaluation."""
 
     manifest_path: Path
-    profile_path: Path
+    profile_path: Path | None
     profile_source: str
     manifest: PocManifest
     enrichments: tuple[EnrichmentDocument, ...]
@@ -111,19 +111,19 @@ def _validate_profile_relationships(
             )
 
 
-def load_compatibility_inputs(
-    profile_path: str | Path,
+def build_compatibility_inputs(
+    profile: TargetProfile,
+    *,
+    profile_source: str,
     manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
 ) -> CompatibilityInputs:
-    """Load supplied structured data without profiling or changing the target."""
+    """Validate an in-memory profile against the current Milestone 2 inputs."""
 
-    raw_profile_path = Path(profile_path)
-    resolved_profile_path = raw_profile_path.resolve()
+    if not profile_source.strip():
+        raise ValueError("profile_source must not be blank")
+
     resolved_manifest_path = Path(manifest_path).resolve()
     manifest, enrichments = _load_m2_inputs(resolved_manifest_path)
-    profile = TargetProfile.model_validate(
-        _load_yaml_mapping(resolved_profile_path)
-    )
 
     if not profile.target.supported:
         raise ValueError(
@@ -134,9 +134,28 @@ def load_compatibility_inputs(
 
     return CompatibilityInputs(
         manifest_path=resolved_manifest_path,
-        profile_path=resolved_profile_path,
-        profile_source=raw_profile_path.as_posix(),
+        profile_path=None,
+        profile_source=profile_source,
         manifest=manifest,
         enrichments=enrichments,
         profile=profile,
     )
+
+
+def load_compatibility_inputs(
+    profile_path: str | Path,
+    manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
+) -> CompatibilityInputs:
+    """Load supplied structured data without profiling or changing the target."""
+
+    raw_profile_path = Path(profile_path)
+    resolved_profile_path = raw_profile_path.resolve()
+    profile = TargetProfile.model_validate(
+        _load_yaml_mapping(resolved_profile_path)
+    )
+    inputs = build_compatibility_inputs(
+        profile,
+        profile_source=raw_profile_path.as_posix(),
+        manifest_path=manifest_path,
+    )
+    return replace(inputs, profile_path=resolved_profile_path)

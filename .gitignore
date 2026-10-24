@@ -23,3 +23,9 @@ data/compatibility/*
 # Milestone 5 sandbox validation reports are local, machine-generated artifacts.
 data/sandbox/*
 !data/sandbox/.gitkeep
+
+# Milestone 6 Controller/Agent databases, credentials, and runtime state are local.
+data/controller/*
+!data/controller/.gitkeep
+data/agent/*
+!data/agent/.gitkeep
